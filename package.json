@@ -1,0 +1,16 @@
+{
+  "name": "whale-tracker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Whale tracker for the Whop native trading API — CLI bot + live dashboard",
+  "scripts": {
+    "bot": "pnpm --filter @whale-tracker/cli start",
+    "web": "pnpm --filter @whale-tracker/web dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "packageManager": "pnpm@10.10.0",
+  "engines": {
+    "node": ">=20"
+  }
+}

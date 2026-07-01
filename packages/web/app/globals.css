@@ -1,0 +1,132 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap");
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  /* Light: warm off-white, not stark, with the gold accent */
+  --radius: 0rem;
+  --background: oklch(0.985 0.004 95);
+  --foreground: oklch(0.22 0.01 264);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.22 0.01 264);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.22 0.01 264);
+  --primary: oklch(0.62 0.14 70);
+  --primary-foreground: oklch(0.99 0.004 95);
+  --secondary: oklch(0.96 0.006 90);
+  --secondary-foreground: oklch(0.28 0.01 264);
+  --muted: oklch(0.96 0.006 90);
+  --muted-foreground: oklch(0.52 0.012 264);
+  --accent: oklch(0.95 0.008 90);
+  --accent-foreground: oklch(0.28 0.01 264);
+  --gold: oklch(0.58 0.14 66);
+  --positive: oklch(0.58 0.15 150);
+  --negative: oklch(0.58 0.2 25);
+  --border: oklch(0.9 0.006 264);
+  --input: oklch(0.9 0.006 264);
+  --ring: oklch(0.62 0.14 70);
+  --grid: oklch(0 0 0 / 4%);
+  --glow-gold: oklch(0.7 0.15 75 / 7%);
+  --glow-blue: oklch(0.6 0.12 250 / 5%);
+}
+
+.dark {
+  /* Deep blue-charcoal (not pure black) with layered elevation + gold accent */
+  --background: oklch(0.17 0.012 264);
+  --foreground: oklch(0.96 0.004 250);
+  --card: oklch(0.215 0.014 264);
+  --card-foreground: oklch(0.96 0.004 250);
+  --popover: oklch(0.215 0.014 264);
+  --popover-foreground: oklch(0.96 0.004 250);
+  --primary: oklch(0.83 0.16 84);
+  --primary-foreground: oklch(0.24 0.05 70);
+  --secondary: oklch(0.27 0.015 264);
+  --secondary-foreground: oklch(0.96 0.004 250);
+  --muted: oklch(0.27 0.015 264);
+  --muted-foreground: oklch(0.7 0.014 260);
+  --accent: oklch(0.3 0.016 264);
+  --accent-foreground: oklch(0.96 0.004 250);
+  --gold: oklch(0.83 0.16 84);
+  --positive: oklch(0.74 0.17 152);
+  --negative: oklch(0.67 0.2 22);
+  --border: oklch(1 0 0 / 9%);
+  --input: oklch(1 0 0 / 12%);
+  --ring: oklch(0.83 0.16 84);
+  --grid: oklch(1 0 0 / 2.5%);
+  --glow-gold: oklch(0.83 0.16 84 / 9%);
+  --glow-blue: oklch(0.6 0.12 250 / 7%);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-gold: var(--gold);
+  --color-positive: var(--positive);
+  --color-negative: var(--negative);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Space Grotesk", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+* {
+  border-color: var(--border);
+}
+
+/* Squared edges everywhere — no rounded corners. */
+*,
+*::before,
+*::after {
+  border-radius: 0 !important;
+}
+
+html,
+body {
+  width: 100%;
+  min-height: 100%;
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  background-image:
+    radial-gradient(60rem 40rem at 100% -10%, var(--glow-gold), transparent 60%),
+    radial-gradient(50rem 40rem at -10% 0%, var(--glow-blue), transparent 55%),
+    linear-gradient(to right, var(--grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid) 1px, transparent 1px);
+  background-size:
+    100% 100%,
+    100% 100%,
+    44px 44px,
+    44px 44px;
+  background-attachment: fixed;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.font-display {
+  font-family: var(--font-display);
+}

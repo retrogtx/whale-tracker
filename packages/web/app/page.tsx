@@ -1,0 +1,571 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import { ArrowUpRight, Clock, Gauge, KeyRound, Newspaper, Repeat2, ScanLine, Settings, Waves, Zap, type LucideIcon } from "lucide-react";
+import { Card, CardContent } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
+import { ThemeToggle } from "@/components/theme-toggle";
+import { ConfirmDialog } from "@/components/confirm-dialog";
+import type { ApiCall, CopyTradeDecision, NewsItem, TrackerSnapshot, WhaleEvent } from "@whale-tracker/core";
+
+const POLL_MS = 3000;
+
+function usd(value: number | null): string {
+  if (value == null) return "—";
+  return value.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+}
+
+function btc(value: number): string {
+  return `${value.toLocaleString("en-US", { maximumFractionDigits: 4 })} BTC`;
+}
+
+function timeAgo(iso: string): string {
+  const secs = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  if (secs < 60) return `${secs}s ago`;
+  if (secs < 3600) return `${Math.round(secs / 60)}m ago`;
+  return `${Math.round(secs / 3600)}h ago`;
+}
+
+export default function Home() {
+  const [snap, setSnap] = useState<TrackerSnapshot | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [connected, setConnected] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [news, setNews] = useState<NewsItem[]>([]);
+  const [confirmLive, setConfirmLive] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function notify(message: string) {
+    setNotice(message);
+    if (noticeTimer.current) clearTimeout(noticeTimer.current);
+    noticeTimer.current = setTimeout(() => setNotice(null), 5000);
+  }
+
+  useEffect(() => {
+    let alive = true;
+    const poll = async () => {
+      try {
+        const res = await fetch("/api/track", { cache: "no-store" });
+        const data = await res.json();
+        if (!alive) return;
+        if (!res.ok) {
+          setError(data.error ?? `Request failed (${res.status})`);
+          setConnected(false);
+          return;
+        }
+        setSnap(data as TrackerSnapshot);
+        setError(null);
+        setConnected(true);
+      } catch (err) {
+        if (alive) {
+          setConnected(false);
+          setError(err instanceof Error ? err.message : "Network error");
+        }
+      }
+    };
+    void poll();
+    timer.current = setInterval(poll, POLL_MS);
+    return () => {
+      alive = false;
+      if (timer.current) clearInterval(timer.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    const loadNews = async () => {
+      try {
+        const res = await fetch("/api/news", { cache: "no-store" });
+        const data = await res.json();
+        if (alive && Array.isArray(data)) setNews(data as NewsItem[]);
+      } catch {
+        /* keep last headlines */
+      }
+    };
+    void loadNews();
+    const id = setInterval(loadNews, 60_000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, []);
+
+  async function applyUpdate(payload: Record<string, unknown>): Promise<boolean> {
+    try {
+      const res = await fetch("/api/track", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        notify(data.error ?? "Failed to update");
+        return false;
+      }
+      setSnap(data as TrackerSnapshot);
+      return true;
+    } catch {
+      notify("Request failed");
+      return false;
+    }
+  }
+
+  function handleSetLive(live: boolean) {
+    if (live) {
+      setConfirmLive(true);
+      return;
+    }
+    void applyUpdate({ live: false });
+  }
+
+  const stats = snap?.stats;
+  const whales = (snap?.events ?? []).filter((e) => e.isWhale);
+  const calls = snap?.apiCalls ?? [];
+  const maxUsd = whales.reduce((m, w) => Math.max(m, w.valueUsd), 0);
+
+  return (
+    <main className="mx-auto w-full max-w-6xl px-6 py-10">
+      <header className="mb-9 flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-3.5">
+          <span className="bg-gold/15 text-gold ring-gold/20 flex size-11 items-center justify-center ring-1">
+            <Waves className="size-5" strokeWidth={2.25} />
+          </span>
+          <div>
+            <h1 className="font-display text-2xl font-semibold tracking-tight">Bitcoin Whale Tracker</h1>
+            <p className="text-muted-foreground font-mono text-xs uppercase tracking-wider">
+              live on-chain whales · auto copy-traded on whop
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          <span className="relative flex size-2.5" title={error ? "error" : connected ? "live" : "connecting"}>
+            {connected && !error ? (
+              <span className="bg-positive absolute inline-flex size-full animate-ping opacity-60" />
+            ) : null}
+            <span
+              className={`relative inline-flex size-2.5 ${
+                error ? "bg-negative" : connected ? "bg-positive" : "bg-muted-foreground animate-pulse"
+              }`}
+            />
+          </span>
+          {error ? <span className="text-negative font-mono text-xs uppercase tracking-wider">error</span> : null}
+          {stats?.btcPriceUsd ? (
+            <span className="border-border bg-card flex items-center gap-1.5 border px-3 py-1.5 font-mono text-sm font-medium tabular-nums">
+              <span className="text-gold">₿</span> {usd(stats.btcPriceUsd)}
+            </span>
+          ) : null}
+          <button
+            type="button"
+            aria-label="Settings"
+            onClick={() => setShowSettings((s) => !s)}
+            className={`border-border flex size-9 items-center justify-center border transition-colors ${
+              showSettings ? "bg-secondary text-foreground" : "bg-card text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <Settings className="size-4" />
+          </button>
+          <ThemeToggle />
+        </div>
+      </header>
+
+      {showSettings ? (
+        <SettingsPanel
+          hasApiKey={stats?.hasApiKey ?? false}
+          accountId={stats?.accountId ?? null}
+          onSave={(apiKey, accountId) => applyUpdate({ apiKey, accountId })}
+        />
+      ) : null}
+
+      {error ? (
+        <Card className="border-negative/40 bg-negative/10 mb-6">
+          <CardContent className="text-negative p-4 text-sm">{error}</CardContent>
+        </Card>
+      ) : null}
+
+      {notice ? (
+        <Card className="border-negative/40 bg-negative/10 mb-6">
+          <CardContent className="text-negative p-4 font-mono text-sm">{notice}</CardContent>
+        </Card>
+      ) : null}
+
+      <ConfirmDialog
+        open={confirmLive}
+        danger
+        title="Enable live copy-trading?"
+        description="Real funds will be used to buy ~$100 of cbBTC for every new whale detected. This places real swaps on your Whop account."
+        confirmLabel="Enable live"
+        onConfirm={() => {
+          setConfirmLive(false);
+          void applyUpdate({ live: true });
+        }}
+        onCancel={() => setConfirmLive(false)}
+      />
+
+      <section className="mb-9 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+        <Stat icon={Waves} label="Whales" value={stats ? String(stats.whaleCount) : "—"} gold />
+        <ThresholdCard value={stats?.thresholdUsd} onCommit={(n) => applyUpdate({ threshold: n })} />
+        <CopyTradeCard
+          mode={stats?.copyTradeMode}
+          onSetLive={handleSetLive}
+          onConnect={() => setShowSettings(true)}
+        />
+        <Stat icon={Zap} label="Trades placed" value={stats ? String(stats.copyTradeCount) : "—"} />
+        <Stat icon={ScanLine} label="Txs scanned" value={stats ? String(stats.eventCount) : "—"} />
+        <Stat icon={Clock} label="Last poll" value={stats?.lastPolledAt ? timeAgo(stats.lastPolledAt) : "—"} />
+      </section>
+
+      <div className="grid gap-5 lg:grid-cols-[1.7fr_1fr]">
+        <Card className="overflow-hidden">
+          <div className="flex items-center justify-between gap-2 px-5 py-3.5">
+            <div className="flex items-center gap-2">
+              <h2 className="font-display text-sm font-semibold tracking-wide">Whale Feed</h2>
+              {whales.length ? (
+                <Badge variant="muted" className="font-mono tabular-nums">
+                  {whales.length}
+                </Badge>
+              ) : null}
+            </div>
+            <span className="text-muted-foreground font-mono text-xs tabular-nums">
+              BTC ≥ {stats ? usd(stats.thresholdUsd) : "—"}
+            </span>
+          </div>
+          <Separator />
+          {whales.length === 0 ? (
+            <EmptyFeed />
+          ) : (
+            <div className="divide-border max-h-[640px] divide-y overflow-y-auto">
+              {whales.map((event, i) => (
+                <WhaleRow key={event.id} event={event} rank={i + 1} maxUsd={maxUsd} />
+              ))}
+            </div>
+          )}
+        </Card>
+
+        <Card className="overflow-hidden">
+          <div className="flex items-center justify-between px-5 py-3.5">
+            <h2 className="font-display text-sm font-semibold tracking-wide">API Activity</h2>
+            <span className="text-muted-foreground font-mono text-xs tabular-nums">
+              {stats ? `${stats.pollCount} polls` : ""}
+            </span>
+          </div>
+          <Separator />
+          {calls.length === 0 ? (
+            <div className="text-muted-foreground py-16 text-center text-sm">No calls yet.</div>
+          ) : (
+            <div className="divide-border max-h-[640px] divide-y overflow-y-auto">
+              {calls.map((call) => (
+                <CallRow key={call.id} call={call} />
+              ))}
+            </div>
+          )}
+        </Card>
+      </div>
+
+      {news.length > 0 ? (
+        <Card className="mt-5 overflow-hidden">
+          <div className="flex items-center justify-between px-5 py-3.5">
+            <div className="flex items-center gap-2">
+              <Newspaper className="text-muted-foreground size-4" />
+              <h2 className="font-display text-sm font-semibold tracking-wide">Bitcoin News</h2>
+            </div>
+            <span className="text-muted-foreground font-mono text-xs tabular-nums">{news.length} stories</span>
+          </div>
+          <Separator />
+          <div className="grid max-h-[520px] overflow-y-auto sm:grid-cols-2">
+            {news.map((item) => (
+              <NewsRow key={item.url} item={item} />
+            ))}
+          </div>
+        </Card>
+      ) : null}
+
+      <p className="text-muted-foreground/60 mt-6 text-center font-mono text-[11px] uppercase tracking-wider">
+        blockchain.info · live BTC price · every whale verifiable on-chain
+      </p>
+    </main>
+  );
+}
+
+function SettingsPanel({
+  hasApiKey,
+  accountId,
+  onSave,
+}: {
+  hasApiKey: boolean;
+  accountId: string | null;
+  onSave: (apiKey: string, accountId: string) => Promise<boolean>;
+}) {
+  const [key, setKey] = useState("");
+  const [account, setAccount] = useState(accountId ?? "");
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    setSaving(true);
+    const ok = await onSave(key, account);
+    setSaving(false);
+    if (ok) setKey("");
+  }
+
+  return (
+    <Card className="mb-6">
+      <CardContent className="p-5">
+        <div className="mb-3 flex items-center gap-2">
+          <KeyRound className="text-muted-foreground size-4" />
+          <h2 className="font-display text-sm font-semibold tracking-wide">Whop credentials</h2>
+          <Badge variant={hasApiKey ? "positive" : "muted"} className="font-mono">
+            {hasApiKey ? "connected" : "not connected"}
+          </Badge>
+        </div>
+        <p className="text-muted-foreground mb-4 text-xs">
+          Held in server memory only — never stored on disk or sent back to the browser. Used to price and
+          (in live mode) place swaps.
+        </p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <label className="flex flex-col gap-1">
+            <span className="text-muted-foreground font-mono text-[11px] uppercase tracking-wider">API key</span>
+            <input
+              type="password"
+              value={key}
+              onChange={(e) => setKey(e.target.value)}
+              placeholder={hasApiKey ? "•••••••• (set — enter to replace)" : "apik_…"}
+              className="border-border bg-secondary focus:border-gold/60 w-full border px-3 py-2 font-mono text-sm outline-none"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-muted-foreground font-mono text-[11px] uppercase tracking-wider">
+              Trading account ID
+            </span>
+            <input
+              type="text"
+              value={account}
+              onChange={(e) => setAccount(e.target.value)}
+              placeholder="biz_… or user_…"
+              className="border-border bg-secondary focus:border-gold/60 w-full border px-3 py-2 font-mono text-sm outline-none"
+            />
+          </label>
+        </div>
+        <div className="mt-4 flex justify-end">
+          <button
+            type="button"
+            onClick={save}
+            disabled={saving || (!key && account === (accountId ?? ""))}
+            className="bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-40 px-4 py-2 font-mono text-xs font-semibold uppercase tracking-wider transition-opacity"
+          >
+            {saving ? "saving…" : "save"}
+          </button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function Stat({ icon: Icon, label, value, gold }: { icon: LucideIcon; label: string; value: string; gold?: boolean }) {
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <div className="text-muted-foreground flex items-center justify-between">
+          <span className="font-mono text-[10px] font-medium uppercase tracking-widest">{label}</span>
+          <Icon className="size-4 opacity-60" />
+        </div>
+        <div className={`font-mono mt-2 text-2xl font-semibold capitalize tabular-nums ${gold ? "text-gold" : ""}`}>
+          {value}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function ThresholdCard({ value, onCommit }: { value: number | undefined; onCommit: (n: number) => void }) {
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <div className="text-muted-foreground flex items-center justify-between">
+          <span className="font-mono text-[10px] font-medium uppercase tracking-widest">Threshold</span>
+          <Gauge className="size-4 opacity-60" />
+        </div>
+        <div className="mt-2 flex items-baseline">
+          <span className="text-muted-foreground font-mono text-2xl font-semibold">$</span>
+          <input
+            key={value}
+            type="number"
+            min={1}
+            defaultValue={value ?? ""}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            }}
+            onBlur={(e) => {
+              const n = Number(e.target.value);
+              if (Number.isFinite(n) && n > 0 && n !== value) onCommit(n);
+            }}
+            className="w-full min-w-0 bg-transparent font-mono text-2xl font-semibold tabular-nums outline-none"
+            aria-label="Whale threshold in USD"
+          />
+        </div>
+        <span className="text-muted-foreground/60 font-mono text-[10px] uppercase tracking-wider">↵ to apply</span>
+      </CardContent>
+    </Card>
+  );
+}
+
+function CopyTradeCard({
+  mode,
+  onSetLive,
+  onConnect,
+}: {
+  mode: "off" | "dry-run" | "live" | undefined;
+  onSetLive: (live: boolean) => void;
+  onConnect: () => void;
+}) {
+  const seg = "px-2.5 py-1 uppercase transition-colors";
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <div className="text-muted-foreground flex items-center justify-between">
+          <span className="font-mono text-[10px] font-medium uppercase tracking-widest">Copy-trade</span>
+          <Repeat2 className="size-4 opacity-60" />
+        </div>
+        {!mode || mode === "off" ? (
+          <button
+            type="button"
+            onClick={onConnect}
+            className="text-muted-foreground hover:text-foreground mt-2 font-mono text-sm underline underline-offset-4"
+          >
+            connect key →
+          </button>
+        ) : (
+          <div className="border-border mt-2.5 inline-flex border font-mono text-[11px]">
+            <button
+              type="button"
+              onClick={() => onSetLive(false)}
+              className={`${seg} ${mode !== "live" ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              dry-run
+            </button>
+            <button
+              type="button"
+              onClick={() => onSetLive(true)}
+              className={`${seg} border-border border-l ${mode === "live" ? "bg-negative/20 text-negative" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              live
+            </button>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function copyBadge(status: CopyTradeDecision["status"]): { variant: "muted" | "gold" | "positive" | "negative"; label: string } {
+  switch (status) {
+    case "completed":
+      return { variant: "positive", label: "executed" };
+    case "pending":
+      return { variant: "gold", label: "pending" };
+    case "failed":
+      return { variant: "negative", label: "failed" };
+    default:
+      return { variant: "muted", label: "dry-run" };
+  }
+}
+
+function WhaleRow({ event, rank, maxUsd }: { event: WhaleEvent; rank: number; maxUsd: number }) {
+  const ct = event.copyTrade;
+  const width = maxUsd > 0 ? Math.max(4, Math.round((event.valueUsd / maxUsd) * 100)) : 4;
+  const badge = ct ? copyBadge(ct.status) : null;
+  return (
+    <div className="hover:bg-accent/40 px-5 py-3.5 transition-colors">
+      <div className="flex items-baseline justify-between gap-3">
+        <div className="flex items-baseline gap-2.5">
+          <span className="text-muted-foreground/50 w-5 text-right font-mono text-xs tabular-nums">
+            {String(rank).padStart(2, "0")}
+          </span>
+          <span className="text-gold font-mono text-lg font-semibold tracking-tight tabular-nums">
+            {usd(event.valueUsd)}
+          </span>
+          <span className="text-muted-foreground font-mono text-sm tabular-nums">{btc(event.valueBtc)}</span>
+        </div>
+        <a
+          href={event.explorerUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="text-muted-foreground hover:text-foreground inline-flex items-center gap-0.5 text-xs"
+        >
+          verify <ArrowUpRight className="size-3" />
+        </a>
+      </div>
+
+      <div className="bg-secondary mt-2 ml-7 h-1 overflow-hidden">
+        <div className="bg-gold/70 h-full" style={{ width: `${width}%` }} />
+      </div>
+
+      <div className="text-muted-foreground mt-2 ml-7 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs">
+        <span className="tabular-nums">{timeAgo(event.detectedAt)}</span>
+        <span className="tabular-nums">
+          {event.inputs} in · {event.outputs} out
+        </span>
+        {ct && badge ? (
+          <span className="inline-flex items-center gap-1.5">
+            <Badge variant={badge.variant} className="font-mono uppercase">
+              {badge.label}
+            </Badge>
+            {ct.error ? (
+              <span className="text-negative/90">{ct.error}</span>
+            ) : (
+              <span className="tabular-nums">
+                buy {usd(ct.sizeUsd)} {ct.fromToken} → {ct.quote ? `${ct.quote.amountOut} ${ct.toToken}` : "?"}
+              </span>
+            )}
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function NewsRow({ item }: { item: NewsItem }) {
+  return (
+    <a
+      href={item.url}
+      target="_blank"
+      rel="noreferrer"
+      className="border-border hover:bg-accent/40 group flex flex-col gap-1 border-b px-5 py-3 transition-colors"
+    >
+      <span className="group-hover:text-gold text-sm leading-snug transition-colors">{item.title}</span>
+      <span className="text-muted-foreground flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-wider">
+        <span className="text-gold/80">{item.source}</span>
+        {item.publishedAt ? <span>· {timeAgo(item.publishedAt)}</span> : null}
+        <ArrowUpRight className="size-3 opacity-0 transition-opacity group-hover:opacity-100" />
+      </span>
+    </a>
+  );
+}
+
+function CallRow({ call }: { call: ApiCall }) {
+  return (
+    <div className="flex items-center gap-3 px-5 py-2 font-mono text-xs">
+      <Badge variant={call.ok ? "positive" : "negative"} className="min-w-11 justify-center font-mono">
+        {call.status || "ERR"}
+      </Badge>
+      <span className="text-muted-foreground w-9 shrink-0">{call.method}</span>
+      <span className="text-foreground/80 flex-1 truncate">{call.endpoint.replace(/^[A-Z]+ /, "")}</span>
+      <span className="text-muted-foreground tabular-nums">{call.latencyMs}ms</span>
+    </div>
+  );
+}
+
+function EmptyFeed() {
+  return (
+    <div className="flex flex-col items-center justify-center gap-3 py-20">
+      <span className="bg-secondary flex size-12 items-center justify-center">
+        <Waves className="text-muted-foreground size-6" />
+      </span>
+      <div className="text-center">
+        <p className="text-sm font-medium">Scanning the mempool…</p>
+        <p className="text-muted-foreground text-xs">Whale-sized transactions will appear here in real time.</p>
+      </div>
+    </div>
+  );
+}
