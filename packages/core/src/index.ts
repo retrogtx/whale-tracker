@@ -11,4 +11,4 @@ export type { RawTx } from "./bitcoin.js";
 export { fetchCryptoNews, fetchBtcNews } from "./news.js";
 export type { NewsItem } from "./news.js";
 export { formatUsd, formatBtc, shortHash } from "./format.js";
-export type { ApiCall, TrackerSnapshot, TrackerStats, WhaleEvent } from "./types.js";
+export type { ApiCall, PlacedTrade, TrackerSnapshot, TrackerStats, WhaleEvent } from "./types.js";

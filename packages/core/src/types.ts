@@ -32,6 +32,7 @@ export interface TrackerStats {
   lastPolledAt: string | null;
   lastError: string | null;
   thresholdUsd: number;
+  budgetUsd: number;
   copyTradeMode: "off" | "dry-run" | "live";
   copyTradeCount: number;
   hasApiKey: boolean;
@@ -39,8 +40,19 @@ export interface TrackerStats {
   running: boolean;
 }
 
+export interface PlacedTrade {
+  id: string;
+  whaleId: string;
+  valueUsd: number;
+  valueBtc: number;
+  explorerUrl: string;
+  placedAt: string;
+  decision: CopyTradeDecision;
+}
+
 export interface TrackerSnapshot {
   stats: TrackerStats;
   events: WhaleEvent[];
   apiCalls: ApiCall[];
+  trades: PlacedTrade[];
 }

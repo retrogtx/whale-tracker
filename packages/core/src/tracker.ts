@@ -1,8 +1,9 @@
 import type { TrackerConfig } from "./config.js";
 import { createWhopClient, type WhopClient } from "./whop.js";
 import { explorerUrl, fetchBtcPriceUsd, fetchRecentTxs, type RawTx } from "./bitcoin.js";
-import { planCopyTrade } from "./copytrade.js";
-import type { ApiCall, TrackerSnapshot, WhaleEvent } from "./types.js";
+import { planCopyTrade, refreshSwapStatus } from "./copytrade.js";
+import type { CopyTradeDecision } from "./copytrade.js";
+import type { ApiCall, PlacedTrade, TrackerSnapshot, WhaleEvent } from "./types.js";
 
 export interface PollResult {
   newEvents: WhaleEvent[];
@@ -15,6 +16,7 @@ export type WhaleListener = (event: WhaleEvent) => void;
 export class WhaleTracker {
   private readonly events: WhaleEvent[] = [];
   private readonly apiCalls: ApiCall[] = [];
+  private readonly trades: PlacedTrade[] = [];
   private readonly seen = new Set<string>();
   private readonly listeners = new Set<WhaleListener>();
 
@@ -23,9 +25,11 @@ export class WhaleTracker {
   private accountId: string | undefined;
   private threshold: number;
   private live: boolean;
+  private budgetUsd: number;
   private whop: WhopClient | null;
 
   private apiCallSeq = 0;
+  private tradeSeq = 0;
   private pollCount = 0;
   private copyTradeCount = 0;
   private btcPriceUsd: number | null = null;
@@ -33,12 +37,15 @@ export class WhaleTracker {
   private lastPolledAt: string | null = null;
   private lastError: string | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
+  // Whop allows only one swap in flight per account — serialize live swaps.
+  private swapQueue: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly config: TrackerConfig) {
     this.apiKey = config.whopApiKey;
     this.accountId = config.copyTradeAccountId;
     this.threshold = config.thresholdUsd;
     this.live = config.copyTradeLive;
+    this.budgetUsd = config.copyTradeBudgetUsd;
     this.whop = this.apiKey ? createWhopClient(this.apiKey, config.whopBaseURL) : null;
   }
 
@@ -79,6 +86,87 @@ export class WhaleTracker {
     return { ok: true };
   }
 
+  /** Change the USD size of each mirrored swap at runtime. */
+  setBudget(value: number): { ok: boolean; error?: string } {
+    if (!Number.isFinite(value) || value <= 0) return { ok: false, error: "Swap size must be a positive number." };
+    this.budgetUsd = value;
+    return { ok: true };
+  }
+
+  /** Fire a copy-trade for one already-detected whale on demand and store the result. */
+  async copyTradeNow(id: string): Promise<{ ok: boolean; error?: string }> {
+    if (!this.copyEnabled || !this.whop) return { ok: false, error: "Connect a Whop API key first." };
+    if (this.live && !this.accountId) return { ok: false, error: "Set a trading account ID before going live." };
+    const whale = this.events.find((e) => e.id === id);
+    if (!whale) return { ok: false, error: "Whale not found." };
+
+    const decision = await this.runCopyTrade(whale);
+    if (decision) {
+      whale.copyTrade = decision;
+      this.recordTrade(whale, decision);
+      if (decision.status === "completed") this.copyTradeCount += 1;
+    }
+    return { ok: true };
+  }
+
+  /** Persist a placed trade in a stable list, independent of the volatile whale feed. */
+  private recordTrade(whale: WhaleEvent, decision: CopyTradeDecision): void {
+    this.trades.unshift({
+      id: `t${(this.tradeSeq += 1)}`,
+      whaleId: whale.id,
+      valueUsd: whale.valueUsd,
+      valueBtc: whale.valueBtc,
+      explorerUrl: whale.explorerUrl,
+      placedAt: new Date().toISOString(),
+      decision,
+    });
+    this.trades.length = Math.min(this.trades.length, this.config.maxEvents);
+  }
+
+  /** Run a copy-trade for one whale, serializing live swaps (one per account at a time). */
+  private runCopyTrade(whale: WhaleEvent): Promise<CopyTradeDecision | null> {
+    const run = () =>
+      planCopyTrade(
+        this.whop as WhopClient,
+        {
+          fromToken: this.config.fromToken,
+          toToken: this.config.toToken,
+          sizeUsd: this.budgetUsd,
+          accountId: this.accountId,
+          live: this.live,
+        },
+        whale,
+      );
+    return this.timed("POST", this.live ? "POST /swaps" : "POST /swaps/quote", () =>
+      this.live ? this.enqueueSwap(run) : run(),
+    );
+  }
+
+  /** Chain a live swap onto the queue so only one runs at a time. */
+  private enqueueSwap<T>(fn: () => Promise<T>): Promise<T> {
+    const next = this.swapQueue.then(fn, fn);
+    this.swapQueue = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
+
+  /** Re-check swaps still marked pending and fold their settled status into the trade + feed. */
+  private async reconcilePendingSwaps(): Promise<void> {
+    if (!this.whop) return;
+    for (const trade of this.trades) {
+      const d = trade.decision;
+      if (d.status !== "pending" || !d.swapId) continue;
+      const updated = await refreshSwapStatus(this.whop, d);
+      trade.decision = updated;
+      const event = this.events.find((e) => e.id === trade.whaleId);
+      if (event) event.copyTrade = updated;
+      if (updated.status === "completed") this.copyTradeCount += 1;
+      if (event && (updated.status === "completed" || updated.status === "failed")) this.emit(event);
+    }
+  }
+
   async pollOnce(): Promise<PollResult> {
     const backfill = !this.seeded;
     const price = await this.timed("GET", "GET /ticker", () => fetchBtcPriceUsd(this.config.btcApiBase));
@@ -110,23 +198,16 @@ export class WhaleTracker {
     for (const whale of newWhales) {
       if (backfill) continue;
       if (this.copyEnabled && this.whop) {
-        whale.copyTrade = await this.timed("POST", this.live ? "POST /swaps" : "POST /swaps/quote", () =>
-          planCopyTrade(
-            this.whop as WhopClient,
-            {
-              fromToken: this.config.fromToken,
-              toToken: this.config.toToken,
-              sizeUsd: this.config.copyTradeBudgetUsd,
-              accountId: this.accountId,
-              live: this.live,
-            },
-            whale,
-          ),
-        );
-        if (whale.copyTrade) this.copyTradeCount += 1;
+        whale.copyTrade = await this.runCopyTrade(whale);
+        if (whale.copyTrade) {
+          this.recordTrade(whale, whale.copyTrade);
+          if (whale.copyTrade.status === "completed") this.copyTradeCount += 1;
+        }
       }
       this.emit(whale);
     }
+
+    if (!backfill) await this.reconcilePendingSwaps();
 
     this.seeded = true;
     return { newEvents, newWhales, backfill };
@@ -161,6 +242,7 @@ export class WhaleTracker {
         lastPolledAt: this.lastPolledAt,
         lastError: this.lastError,
         thresholdUsd: this.threshold,
+        budgetUsd: this.budgetUsd,
         copyTradeMode: mode,
         copyTradeCount: this.copyTradeCount,
         hasApiKey: this.whop != null,
@@ -169,6 +251,7 @@ export class WhaleTracker {
       },
       events: [...this.events],
       apiCalls: [...this.apiCalls],
+      trades: [...this.trades],
     };
   }
 

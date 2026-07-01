@@ -1,13 +1,14 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ArrowUpRight, Clock, Gauge, KeyRound, Newspaper, Repeat2, ScanLine, Settings, Waves, Zap, type LucideIcon } from "lucide-react";
+import { ArrowUpRight, Clock, Gauge, Loader2, Newspaper, Repeat2, ScanLine, Settings, Waves, Zap, type LucideIcon } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { ConfirmDialog } from "@/components/confirm-dialog";
-import type { ApiCall, CopyTradeDecision, NewsItem, TrackerSnapshot, WhaleEvent } from "@whale-tracker/core";
+import { CredentialsModal } from "@/components/credentials-modal";
+import type { CopyTradeDecision, NewsItem, PlacedTrade, TrackerSnapshot, WhaleEvent } from "@whale-tracker/core";
 
 const POLL_MS = 3000;
 
@@ -31,7 +32,9 @@ export default function Home() {
   const [snap, setSnap] = useState<TrackerSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
+  const [editCreds, setEditCreds] = useState(false);
+  const [sessionConnected, setSessionConnected] = useState<boolean | null>(null);
+  const [copyingId, setCopyingId] = useState<string | null>(null);
   const [news, setNews] = useState<NewsItem[]>([]);
   const [confirmLive, setConfirmLive] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -43,6 +46,10 @@ export default function Home() {
     if (noticeTimer.current) clearTimeout(noticeTimer.current);
     noticeTimer.current = setTimeout(() => setNotice(null), 5000);
   }
+
+  useEffect(() => {
+    setSessionConnected(sessionStorage.getItem("whop-connected") === "1");
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -113,6 +120,12 @@ export default function Home() {
     }
   }
 
+  async function copyTrade(id: string) {
+    setCopyingId(id);
+    await applyUpdate({ copyTradeId: id });
+    setCopyingId(null);
+  }
+
   function handleSetLive(live: boolean) {
     if (live) {
       setConfirmLive(true);
@@ -123,8 +136,8 @@ export default function Home() {
 
   const stats = snap?.stats;
   const whales = (snap?.events ?? []).filter((e) => e.isWhale);
-  const calls = snap?.apiCalls ?? [];
   const maxUsd = whales.reduce((m, w) => Math.max(m, w.valueUsd), 0);
+  const trades = snap?.trades ?? [];
 
   return (
     <main className="mx-auto w-full max-w-6xl px-6 py-10">
@@ -159,11 +172,9 @@ export default function Home() {
           ) : null}
           <button
             type="button"
-            aria-label="Settings"
-            onClick={() => setShowSettings((s) => !s)}
-            className={`border-border flex size-9 items-center justify-center border transition-colors ${
-              showSettings ? "bg-secondary text-foreground" : "bg-card text-muted-foreground hover:text-foreground"
-            }`}
+            aria-label="Whop credentials"
+            onClick={() => setEditCreds(true)}
+            className="border-border bg-card text-muted-foreground hover:text-foreground flex size-9 items-center justify-center border transition-colors"
           >
             <Settings className="size-4" />
           </button>
@@ -171,13 +182,22 @@ export default function Home() {
         </div>
       </header>
 
-      {showSettings ? (
-        <SettingsPanel
-          hasApiKey={stats?.hasApiKey ?? false}
-          accountId={stats?.accountId ?? null}
-          onSave={(apiKey, accountId) => applyUpdate({ apiKey, accountId })}
-        />
-      ) : null}
+      <CredentialsModal
+        open={editCreds || sessionConnected === false}
+        dismissible={sessionConnected === true}
+        hasApiKey={stats?.hasApiKey ?? false}
+        accountId={stats?.accountId ?? null}
+        onSave={async (apiKey, accountId) => {
+          const ok = await applyUpdate({ apiKey, accountId });
+          if (ok) {
+            sessionStorage.setItem("whop-connected", "1");
+            setSessionConnected(true);
+            setEditCreds(false);
+          }
+          return ok;
+        }}
+        onCancel={() => setEditCreds(false)}
+      />
 
       {error ? (
         <Card className="border-negative/40 bg-negative/10 mb-6">
@@ -195,7 +215,7 @@ export default function Home() {
         open={confirmLive}
         danger
         title="Enable live copy-trading?"
-        description="Real funds will be used to buy ~$100 of cbBTC for every new whale detected. This places real swaps on your Whop account."
+        description={`Real funds will be used to buy ~${usd(stats?.budgetUsd ?? 100)} of cbBTC for every new whale detected. This places real swaps on your Whop account.`}
         confirmLabel="Enable live"
         onConfirm={() => {
           setConfirmLive(false);
@@ -209,8 +229,10 @@ export default function Home() {
         <ThresholdCard value={stats?.thresholdUsd} onCommit={(n) => applyUpdate({ threshold: n })} />
         <CopyTradeCard
           mode={stats?.copyTradeMode}
+          budgetUsd={stats?.budgetUsd}
           onSetLive={handleSetLive}
-          onConnect={() => setShowSettings(true)}
+          onSetBudget={(n) => applyUpdate({ budget: n })}
+          onConnect={() => setEditCreds(true)}
         />
         <Stat icon={Zap} label="Trades placed" value={stats ? String(stats.copyTradeCount) : "—"} />
         <Stat icon={ScanLine} label="Txs scanned" value={stats ? String(stats.eventCount) : "—"} />
@@ -238,7 +260,16 @@ export default function Home() {
           ) : (
             <div className="divide-border max-h-[640px] divide-y overflow-y-auto">
               {whales.map((event, i) => (
-                <WhaleRow key={event.id} event={event} rank={i + 1} maxUsd={maxUsd} />
+                <WhaleRow
+                  key={event.id}
+                  event={event}
+                  rank={i + 1}
+                  maxUsd={maxUsd}
+                  canCopy={!!stats && stats.copyTradeMode !== "off"}
+                  live={stats?.copyTradeMode === "live"}
+                  busy={copyingId === event.id}
+                  onCopyTrade={() => copyTrade(event.id)}
+                />
               ))}
             </div>
           )}
@@ -246,119 +277,60 @@ export default function Home() {
 
         <Card className="overflow-hidden">
           <div className="flex items-center justify-between px-5 py-3.5">
-            <h2 className="font-display text-sm font-semibold tracking-wide">API Activity</h2>
+            <div className="flex items-center gap-2">
+              <Newspaper className="text-muted-foreground size-4" />
+              <h2 className="font-display text-sm font-semibold tracking-wide">Bitcoin News</h2>
+            </div>
             <span className="text-muted-foreground font-mono text-xs tabular-nums">
-              {stats ? `${stats.pollCount} polls` : ""}
+              {news.length ? `${news.length} stories` : ""}
             </span>
           </div>
           <Separator />
-          {calls.length === 0 ? (
-            <div className="text-muted-foreground py-16 text-center text-sm">No calls yet.</div>
+          {news.length === 0 ? (
+            <div className="text-muted-foreground py-16 text-center text-sm">No headlines yet.</div>
           ) : (
-            <div className="divide-border max-h-[640px] divide-y overflow-y-auto">
-              {calls.map((call) => (
-                <CallRow key={call.id} call={call} />
+            <div className="max-h-[640px] overflow-y-auto">
+              {news.map((item) => (
+                <NewsRow key={item.url} item={item} />
               ))}
             </div>
           )}
         </Card>
       </div>
 
-      {news.length > 0 ? (
-        <Card className="mt-5 overflow-hidden">
-          <div className="flex items-center justify-between px-5 py-3.5">
-            <div className="flex items-center gap-2">
-              <Newspaper className="text-muted-foreground size-4" />
-              <h2 className="font-display text-sm font-semibold tracking-wide">Bitcoin News</h2>
-            </div>
-            <span className="text-muted-foreground font-mono text-xs tabular-nums">{news.length} stories</span>
+      <Card className="mt-5 overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-3.5">
+          <div className="flex items-center gap-2">
+            <Zap className="text-muted-foreground size-4" />
+            <h2 className="font-display text-sm font-semibold tracking-wide">Copy Trades</h2>
+            {trades.length ? (
+              <Badge variant="muted" className="font-mono tabular-nums">
+                {trades.length}
+              </Badge>
+            ) : null}
           </div>
-          <Separator />
-          <div className="grid max-h-[520px] overflow-y-auto sm:grid-cols-2">
-            {news.map((item) => (
-              <NewsRow key={item.url} item={item} />
+          <span className="text-muted-foreground font-mono text-xs tabular-nums">
+            {stats ? `${stats.copyTradeCount} executed` : ""}
+          </span>
+        </div>
+        <Separator />
+        {trades.length === 0 ? (
+          <div className="text-muted-foreground py-12 text-center text-sm">
+            No trades yet — click <span className="text-foreground font-mono">copy trade</span> on a whale.
+          </div>
+        ) : (
+          <div className="divide-border max-h-[420px] divide-y overflow-y-auto">
+            {trades.map((trade) => (
+              <TradeRow key={trade.id} trade={trade} />
             ))}
           </div>
-        </Card>
-      ) : null}
+        )}
+      </Card>
 
       <p className="text-muted-foreground/60 mt-6 text-center font-mono text-[11px] uppercase tracking-wider">
         blockchain.info · live BTC price · every whale verifiable on-chain
       </p>
     </main>
-  );
-}
-
-function SettingsPanel({
-  hasApiKey,
-  accountId,
-  onSave,
-}: {
-  hasApiKey: boolean;
-  accountId: string | null;
-  onSave: (apiKey: string, accountId: string) => Promise<boolean>;
-}) {
-  const [key, setKey] = useState("");
-  const [account, setAccount] = useState(accountId ?? "");
-  const [saving, setSaving] = useState(false);
-
-  async function save() {
-    setSaving(true);
-    const ok = await onSave(key, account);
-    setSaving(false);
-    if (ok) setKey("");
-  }
-
-  return (
-    <Card className="mb-6">
-      <CardContent className="p-5">
-        <div className="mb-3 flex items-center gap-2">
-          <KeyRound className="text-muted-foreground size-4" />
-          <h2 className="font-display text-sm font-semibold tracking-wide">Whop credentials</h2>
-          <Badge variant={hasApiKey ? "positive" : "muted"} className="font-mono">
-            {hasApiKey ? "connected" : "not connected"}
-          </Badge>
-        </div>
-        <p className="text-muted-foreground mb-4 text-xs">
-          Held in server memory only — never stored on disk or sent back to the browser. Used to price and
-          (in live mode) place swaps.
-        </p>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <label className="flex flex-col gap-1">
-            <span className="text-muted-foreground font-mono text-[11px] uppercase tracking-wider">API key</span>
-            <input
-              type="password"
-              value={key}
-              onChange={(e) => setKey(e.target.value)}
-              placeholder={hasApiKey ? "•••••••• (set — enter to replace)" : "apik_…"}
-              className="border-border bg-secondary focus:border-gold/60 w-full border px-3 py-2 font-mono text-sm outline-none"
-            />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-muted-foreground font-mono text-[11px] uppercase tracking-wider">
-              Trading account ID
-            </span>
-            <input
-              type="text"
-              value={account}
-              onChange={(e) => setAccount(e.target.value)}
-              placeholder="biz_… or user_…"
-              className="border-border bg-secondary focus:border-gold/60 w-full border px-3 py-2 font-mono text-sm outline-none"
-            />
-          </label>
-        </div>
-        <div className="mt-4 flex justify-end">
-          <button
-            type="button"
-            onClick={save}
-            disabled={saving || (!key && account === (accountId ?? ""))}
-            className="bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-40 px-4 py-2 font-mono text-xs font-semibold uppercase tracking-wider transition-opacity"
-          >
-            {saving ? "saving…" : "save"}
-          </button>
-        </div>
-      </CardContent>
-    </Card>
   );
 }
 
@@ -412,11 +384,15 @@ function ThresholdCard({ value, onCommit }: { value: number | undefined; onCommi
 
 function CopyTradeCard({
   mode,
+  budgetUsd,
   onSetLive,
+  onSetBudget,
   onConnect,
 }: {
   mode: "off" | "dry-run" | "live" | undefined;
+  budgetUsd: number | undefined;
   onSetLive: (live: boolean) => void;
+  onSetBudget: (n: number) => void;
   onConnect: () => void;
 }) {
   const seg = "px-2.5 py-1 uppercase transition-colors";
@@ -436,22 +412,43 @@ function CopyTradeCard({
             connect key →
           </button>
         ) : (
-          <div className="border-border mt-2.5 inline-flex border font-mono text-[11px]">
-            <button
-              type="button"
-              onClick={() => onSetLive(false)}
-              className={`${seg} ${mode !== "live" ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-            >
-              dry-run
-            </button>
-            <button
-              type="button"
-              onClick={() => onSetLive(true)}
-              className={`${seg} border-border border-l ${mode === "live" ? "bg-negative/20 text-negative" : "text-muted-foreground hover:text-foreground"}`}
-            >
-              live
-            </button>
-          </div>
+          <>
+            <div className="border-border mt-2.5 inline-flex border font-mono text-[11px]">
+              <button
+                type="button"
+                onClick={() => onSetLive(false)}
+                className={`${seg} ${mode !== "live" ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+              >
+                dry-run
+              </button>
+              <button
+                type="button"
+                onClick={() => onSetLive(true)}
+                className={`${seg} border-border border-l ${mode === "live" ? "bg-negative/20 text-negative" : "text-muted-foreground hover:text-foreground"}`}
+              >
+                live
+              </button>
+            </div>
+            <div className="text-muted-foreground mt-2.5 flex items-baseline gap-1 font-mono text-xs">
+              <span>$</span>
+              <input
+                key={budgetUsd}
+                type="number"
+                min={1}
+                defaultValue={budgetUsd ?? ""}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                }}
+                onBlur={(e) => {
+                  const n = Number(e.target.value);
+                  if (Number.isFinite(n) && n > 0 && n !== budgetUsd) onSetBudget(n);
+                }}
+                className="text-foreground w-16 min-w-0 bg-transparent font-mono text-xs tabular-nums outline-none"
+                aria-label="Swap size in USD"
+              />
+              <span className="text-muted-foreground/70">/ swap</span>
+            </div>
+          </>
         )}
       </CardContent>
     </Card>
@@ -471,10 +468,28 @@ function copyBadge(status: CopyTradeDecision["status"]): { variant: "muted" | "g
   }
 }
 
-function WhaleRow({ event, rank, maxUsd }: { event: WhaleEvent; rank: number; maxUsd: number }) {
+function WhaleRow({
+  event,
+  rank,
+  maxUsd,
+  canCopy,
+  live,
+  busy,
+  onCopyTrade,
+}: {
+  event: WhaleEvent;
+  rank: number;
+  maxUsd: number;
+  canCopy: boolean;
+  live: boolean;
+  busy: boolean;
+  onCopyTrade: () => void;
+}) {
   const ct = event.copyTrade;
   const width = maxUsd > 0 ? Math.max(4, Math.round((event.valueUsd / maxUsd) * 100)) : 4;
   const badge = ct ? copyBadge(ct.status) : null;
+  const pending = ct?.status === "pending";
+  const working = busy || pending;
   return (
     <div className="hover:bg-accent/40 px-5 py-3.5 transition-colors">
       <div className="flex items-baseline justify-between gap-3">
@@ -487,14 +502,29 @@ function WhaleRow({ event, rank, maxUsd }: { event: WhaleEvent; rank: number; ma
           </span>
           <span className="text-muted-foreground font-mono text-sm tabular-nums">{btc(event.valueBtc)}</span>
         </div>
-        <a
-          href={event.explorerUrl}
-          target="_blank"
-          rel="noreferrer"
-          className="text-muted-foreground hover:text-foreground inline-flex items-center gap-0.5 text-xs"
-        >
-          verify <ArrowUpRight className="size-3" />
-        </a>
+        <div className="flex items-center gap-3">
+          {canCopy ? (
+            <button
+              type="button"
+              onClick={onCopyTrade}
+              disabled={working}
+              className={`border-border inline-flex items-center gap-1 border px-2 py-0.5 font-mono text-[11px] uppercase tracking-wider transition-colors disabled:opacity-50 ${
+                live ? "text-negative hover:bg-negative/10" : "text-muted-foreground hover:bg-accent hover:text-foreground"
+              }`}
+            >
+              {working ? <Loader2 className="size-3 animate-spin" /> : <Zap className="size-3" />}
+              {busy ? "swapping…" : pending ? "settling…" : ct ? "retry" : live ? "copy trade" : "quote"}
+            </button>
+          ) : null}
+          <a
+            href={event.explorerUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="text-muted-foreground hover:text-foreground inline-flex items-center gap-0.5 text-xs"
+          >
+            verify <ArrowUpRight className="size-3" />
+          </a>
+        </div>
       </div>
 
       <div className="bg-secondary mt-2 ml-7 h-1 overflow-hidden">
@@ -503,12 +533,10 @@ function WhaleRow({ event, rank, maxUsd }: { event: WhaleEvent; rank: number; ma
 
       <div className="text-muted-foreground mt-2 ml-7 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs">
         <span className="tabular-nums">{timeAgo(event.detectedAt)}</span>
-        <span className="tabular-nums">
-          {event.inputs} in · {event.outputs} out
-        </span>
         {ct && badge ? (
           <span className="inline-flex items-center gap-1.5">
-            <Badge variant={badge.variant} className="font-mono uppercase">
+            <Badge variant={badge.variant} className="inline-flex items-center gap-1 font-mono uppercase">
+              {pending ? <Loader2 className="size-3 animate-spin" /> : null}
               {badge.label}
             </Badge>
             {ct.error ? (
@@ -520,6 +548,38 @@ function WhaleRow({ event, rank, maxUsd }: { event: WhaleEvent; rank: number; ma
             )}
           </span>
         ) : null}
+      </div>
+    </div>
+  );
+}
+
+function TradeRow({ trade }: { trade: PlacedTrade }) {
+  const d = trade.decision;
+  const badge = copyBadge(d.status);
+  const pending = d.status === "pending";
+  return (
+    <div className="hover:bg-accent/40 flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5 px-5 py-3 font-mono text-xs transition-colors">
+      <div className="flex items-center gap-3">
+        <Badge variant={badge.variant} className="inline-flex min-w-[70px] items-center justify-center gap-1 font-mono uppercase">
+          {pending ? <Loader2 className="size-3 animate-spin" /> : null}
+          {badge.label}
+        </Badge>
+        <span className="tabular-nums">
+          buy {usd(d.sizeUsd)} {d.fromToken} → {d.quote ? `${d.quote.amountOut} ${d.toToken}` : "?"}
+        </span>
+      </div>
+      <div className="text-muted-foreground flex items-center gap-3">
+        {d.error ? <span className="text-negative/90 max-w-[320px] truncate">{d.error}</span> : null}
+        <span className="tabular-nums">{usd(trade.valueUsd)} whale</span>
+        <span className="tabular-nums">{timeAgo(trade.placedAt)}</span>
+        <a
+          href={trade.explorerUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="hover:text-foreground inline-flex items-center gap-0.5"
+        >
+          verify <ArrowUpRight className="size-3" />
+        </a>
       </div>
     </div>
   );
@@ -540,19 +600,6 @@ function NewsRow({ item }: { item: NewsItem }) {
         <ArrowUpRight className="size-3 opacity-0 transition-opacity group-hover:opacity-100" />
       </span>
     </a>
-  );
-}
-
-function CallRow({ call }: { call: ApiCall }) {
-  return (
-    <div className="flex items-center gap-3 px-5 py-2 font-mono text-xs">
-      <Badge variant={call.ok ? "positive" : "negative"} className="min-w-11 justify-center font-mono">
-        {call.status || "ERR"}
-      </Badge>
-      <span className="text-muted-foreground w-9 shrink-0">{call.method}</span>
-      <span className="text-foreground/80 flex-1 truncate">{call.endpoint.replace(/^[A-Z]+ /, "")}</span>
-      <span className="text-muted-foreground tabular-nums">{call.latencyMs}ms</span>
-    </div>
   );
 }
 

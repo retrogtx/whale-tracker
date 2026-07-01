@@ -60,6 +60,11 @@ function cleanMessage(msg: string): string {
   if (/network error|framing|timeout|ECONNRESET|ETIMEDOUT|fetch failed|503|502/i.test(msg)) {
     return `Swap provider unavailable (transient) — retries on the next whale: ${msg}`;
   }
+  // Whop reports settlement/funding failures as generic "withdrawal"/"vault swap"
+  // errors — almost always too little USDT to fund the buy.
+  if (/withdrawal|vault swap|process the swap|could not settle/i.test(msg)) {
+    return `Swap failed — likely insufficient USDT in your Whop wallet. Fund it or lower the swap size. [${msg}]`;
+  }
   return msg;
 }
 
@@ -139,29 +144,46 @@ export async function planCopyTrade(
 
   // Swaps settle asynchronously — poll until terminal so a later failure
   // (e.g. insufficient USDT surfaced after acceptance) shows the real state.
+  // Stragglers that outlast this window are reconciled later by refreshSwapStatus.
   if (swapId) {
-    for (let i = 0; i < 5; i += 1) {
-      try {
-        const result = (await whop.get(`/swaps/${swapId}`)) as {
-          status?: string;
-          tx_hashes?: string[];
-          error?: string | null;
-        };
-        decision.status = normalizeStatus(result.status);
-        decision.txHash = result.tx_hashes?.[0] ?? null;
-        if (result.error) {
-          decision.status = "failed";
-          decision.error = cleanMessage(result.error);
-        }
-        if (decision.status === "completed" || decision.status === "failed") break;
-      } catch {
-        // transient read failure — try again
-      }
-      if (i < 4) await sleep(1500);
+    for (let i = 0; i < SETTLE_ATTEMPTS; i += 1) {
+      const settled = await pollSwapOnce(whop, swapId, decision);
+      if (settled) break;
+      if (i < SETTLE_ATTEMPTS - 1) await sleep(1500);
     }
   }
 
   return decision;
+}
+
+const SETTLE_ATTEMPTS = 10;
+
+/** Read a swap once and fold its status into `decision`. Returns true when terminal. */
+async function pollSwapOnce(whop: WhopClient, swapId: string, decision: CopyTradeDecision): Promise<boolean> {
+  try {
+    const result = (await whop.get(`/swaps/${swapId}`)) as {
+      status?: string;
+      tx_hashes?: string[];
+      error?: string | null;
+    };
+    decision.status = normalizeStatus(result.status);
+    decision.txHash = result.tx_hashes?.[0] ?? decision.txHash;
+    if (result.error) {
+      decision.status = "failed";
+      decision.error = cleanMessage(result.error);
+    }
+    return decision.status === "completed" || decision.status === "failed";
+  } catch {
+    return false; // transient read failure — try again
+  }
+}
+
+/** Re-check a still-pending swap once, returning an updated decision (or the same one). */
+export async function refreshSwapStatus(whop: WhopClient, decision: CopyTradeDecision): Promise<CopyTradeDecision> {
+  if (!decision.swapId || decision.status !== "pending") return decision;
+  const next: CopyTradeDecision = { ...decision };
+  await pollSwapOnce(whop, decision.swapId, next);
+  return next;
 }
 
 function normalizeStatus(status: string | undefined): CopyTradeStatus {

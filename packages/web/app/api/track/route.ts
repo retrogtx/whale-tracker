@@ -17,6 +17,8 @@ interface UpdateBody {
   threshold?: unknown;
   apiKey?: unknown;
   accountId?: unknown;
+  budget?: unknown;
+  copyTradeId?: unknown;
 }
 
 export async function POST(req: Request) {
@@ -34,8 +36,16 @@ export async function POST(req: Request) {
       const r = tracker.setThreshold(body.threshold);
       if (!r.ok) return NextResponse.json({ error: r.error }, { status: 400 });
     }
+    if (typeof body.budget === "number") {
+      const r = tracker.setBudget(body.budget);
+      if (!r.ok) return NextResponse.json({ error: r.error }, { status: 400 });
+    }
     if (typeof body.live === "boolean") {
       const r = tracker.setLive(body.live);
+      if (!r.ok) return NextResponse.json({ error: r.error }, { status: 400 });
+    }
+    if (typeof body.copyTradeId === "string") {
+      const r = await tracker.copyTradeNow(body.copyTradeId);
       if (!r.ok) return NextResponse.json({ error: r.error }, { status: 400 });
     }
 
