@@ -1,4 +1,5 @@
 import type { CopyTradeDecision } from "./copytrade.js";
+import type { WhopAccount } from "./whop.js";
 
 export interface WhaleEvent {
   id: string;
@@ -34,9 +35,17 @@ export interface TrackerStats {
   thresholdUsd: number;
   budgetUsd: number;
   copyTradeMode: "off" | "dry-run" | "live";
+  yolo: boolean;
   copyTradeCount: number;
   hasApiKey: boolean;
   accountId: string | null;
+  accountType: "business" | "personal";
+  businessAccountId: string | null;
+  personalAccountId: string | null;
+  accounts: WhopAccount[];
+  availableTokens: string[];
+  fromToken: string;
+  toToken: string;
   running: boolean;
 }
 

@@ -6,25 +6,31 @@ import { KeyRound } from "lucide-react";
 export function CredentialsModal({
   open,
   hasApiKey,
-  accountId,
+  businessAccountId,
+  personalAccountId,
   dismissible,
   onSave,
   onCancel,
 }: {
   open: boolean;
   hasApiKey: boolean;
-  accountId: string | null;
+  businessAccountId: string | null;
+  personalAccountId: string | null;
   dismissible: boolean;
-  onSave: (apiKey: string, accountId: string) => Promise<boolean>;
+  onSave: (apiKey: string, businessAccountId: string, personalAccountId: string) => Promise<boolean>;
   onCancel: () => void;
 }) {
   const [key, setKey] = useState("");
-  const [account, setAccount] = useState(accountId ?? "");
+  const [business, setBusiness] = useState(businessAccountId ?? "");
+  const [personal, setPersonal] = useState(personalAccountId ?? "");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (open) setAccount(accountId ?? "");
-  }, [open, accountId]);
+    if (open) {
+      setBusiness(businessAccountId ?? "");
+      setPersonal(personalAccountId ?? "");
+    }
+  }, [open, businessAccountId, personalAccountId]);
 
   useEffect(() => {
     if (!open || !dismissible) return;
@@ -37,12 +43,14 @@ export function CredentialsModal({
 
   if (!open) return null;
 
-  const canSave = key.trim().length > 0 && account.trim().length > 0;
+  // Only the API key is required — accounts are auto-detected from it. The
+  // fields below are optional overrides if detection misses one.
+  const canSave = key.trim().length > 0;
 
   async function save() {
     if (!canSave) return;
     setSaving(true);
-    const ok = await onSave(key.trim(), account.trim());
+    const ok = await onSave(key.trim(), business.trim(), personal.trim());
     setSaving(false);
     if (ok) setKey("");
   }
@@ -66,8 +74,8 @@ export function CredentialsModal({
           <h2 className="font-display text-lg font-semibold">Connect your Whop account</h2>
         </div>
         <p className="text-muted-foreground mb-4 text-sm leading-relaxed">
-          Both fields are required to run the tracker. Held in server memory only — never stored on disk or sent
-          back to the browser.
+          Just your API key — we auto-detect the accounts it can trade from. The fields below are optional
+          overrides. Held in server memory only — never stored on disk or sent back to the browser.
         </p>
         <div className="grid gap-3">
           <label className="flex flex-col gap-1">
@@ -88,16 +96,31 @@ export function CredentialsModal({
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-muted-foreground font-mono text-[11px] uppercase tracking-wider">
-              Trading account ID <span className="text-negative">*</span>
+              Business account (biz_)
             </span>
             <input
               type="text"
-              value={account}
-              onChange={(e) => setAccount(e.target.value)}
+              value={business}
+              onChange={(e) => setBusiness(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") void save();
               }}
-              placeholder="biz_… or user_…"
+              placeholder="biz_…"
+              className="border-border bg-secondary focus:border-gold/60 w-full border px-3 py-2 font-mono text-sm outline-none"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-muted-foreground font-mono text-[11px] uppercase tracking-wider">
+              Personal account (user_) — /finance
+            </span>
+            <input
+              type="text"
+              value={personal}
+              onChange={(e) => setPersonal(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void save();
+              }}
+              placeholder="user_…"
               className="border-border bg-secondary focus:border-gold/60 w-full border px-3 py-2 font-mono text-sm outline-none"
             />
           </label>

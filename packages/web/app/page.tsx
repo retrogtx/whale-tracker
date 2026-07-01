@@ -186,9 +186,10 @@ export default function Home() {
         open={editCreds || sessionConnected === false}
         dismissible={sessionConnected === true}
         hasApiKey={stats?.hasApiKey ?? false}
-        accountId={stats?.accountId ?? null}
-        onSave={async (apiKey, accountId) => {
-          const ok = await applyUpdate({ apiKey, accountId });
+        businessAccountId={stats?.businessAccountId ?? null}
+        personalAccountId={stats?.personalAccountId ?? null}
+        onSave={async (apiKey, businessAccountId, personalAccountId) => {
+          const ok = await applyUpdate({ apiKey, businessAccountId, personalAccountId });
           if (ok) {
             sessionStorage.setItem("whop-connected", "1");
             setSessionConnected(true);
@@ -230,8 +231,17 @@ export default function Home() {
         <CopyTradeCard
           mode={stats?.copyTradeMode}
           budgetUsd={stats?.budgetUsd}
+          fromToken={stats?.fromToken}
+          availableTokens={stats?.availableTokens}
+          accountType={stats?.accountType}
+          hasBusiness={!!stats?.businessAccountId}
+          hasPersonal={!!stats?.personalAccountId}
+          yolo={stats?.yolo}
           onSetLive={handleSetLive}
           onSetBudget={(n) => applyUpdate({ budget: n })}
+          onSetFromToken={(t) => applyUpdate({ fromToken: t })}
+          onSetAccountType={(t) => applyUpdate({ accountType: t })}
+          onSetYolo={(on) => applyUpdate({ yolo: on })}
           onConnect={() => setEditCreds(true)}
         />
         <Stat icon={Zap} label="Trades placed" value={stats ? String(stats.copyTradeCount) : "—"} />
@@ -310,7 +320,7 @@ export default function Home() {
             ) : null}
           </div>
           <span className="text-muted-foreground font-mono text-xs tabular-nums">
-            {stats ? `${stats.copyTradeCount} executed` : ""}
+            {stats ? `${stats.copyTradeCount} placed` : ""}
           </span>
         </div>
         <Separator />
@@ -385,17 +395,40 @@ function ThresholdCard({ value, onCommit }: { value: number | undefined; onCommi
 function CopyTradeCard({
   mode,
   budgetUsd,
+  fromToken,
+  availableTokens,
+  accountType,
+  hasBusiness,
+  hasPersonal,
+  yolo,
   onSetLive,
   onSetBudget,
+  onSetFromToken,
+  onSetAccountType,
+  onSetYolo,
   onConnect,
 }: {
   mode: "off" | "dry-run" | "live" | undefined;
   budgetUsd: number | undefined;
+  fromToken: string | undefined;
+  availableTokens: string[] | undefined;
+  accountType: "business" | "personal" | undefined;
+  hasBusiness: boolean;
+  hasPersonal: boolean;
+  yolo: boolean | undefined;
   onSetLive: (live: boolean) => void;
   onSetBudget: (n: number) => void;
+  onSetFromToken: (token: string) => void;
+  onSetAccountType: (type: "business" | "personal") => void;
+  onSetYolo: (on: boolean) => void;
   onConnect: () => void;
 }) {
   const seg = "px-2.5 py-1 uppercase transition-colors";
+  const availableTypes = (["business", "personal"] as const).filter((t) =>
+    t === "business" ? hasBusiness : hasPersonal,
+  );
+  // Only the tokens the wallet actually holds — plus the current one so it's never empty.
+  const tokenOptions = [...new Set([...(availableTokens ?? []), ...(fromToken ? [fromToken] : [])])];
   return (
     <Card>
       <CardContent className="p-4">
@@ -429,7 +462,41 @@ function CopyTradeCard({
                 live
               </button>
             </div>
-            <div className="text-muted-foreground mt-2.5 flex items-baseline gap-1 font-mono text-xs">
+            <div className="mt-2.5 flex flex-wrap items-center gap-x-2 gap-y-1.5 font-mono text-[11px]">
+              {availableTypes.length > 1 ? (
+                <div className="border-border inline-flex border">
+                  {availableTypes.map((t, i) => (
+                    <button
+                      key={t}
+                      type="button"
+                      onClick={() => onSetAccountType(t)}
+                      className={`${seg} ${i > 0 ? "border-border border-l" : ""} ${
+                        accountType === t ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {t === "business" ? "biz" : "finance"}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              {tokenOptions.length > 1 ? (
+                <div className="border-border inline-flex border">
+                  {tokenOptions.map((t, i) => (
+                    <button
+                      key={t}
+                      type="button"
+                      onClick={() => onSetFromToken(t)}
+                      className={`${seg} ${i > 0 ? "border-border border-l" : ""} ${
+                        fromToken === t ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {t}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+            <div className="text-muted-foreground mt-2 flex items-baseline gap-1 font-mono text-xs">
               <span>$</span>
               <input
                 key={budgetUsd}
@@ -443,11 +510,21 @@ function CopyTradeCard({
                   const n = Number(e.target.value);
                   if (Number.isFinite(n) && n > 0 && n !== budgetUsd) onSetBudget(n);
                 }}
-                className="text-foreground w-16 min-w-0 bg-transparent font-mono text-xs tabular-nums outline-none"
+                className="text-foreground w-14 min-w-0 bg-transparent font-mono text-xs tabular-nums outline-none"
                 aria-label="Swap size in USD"
               />
-              <span className="text-muted-foreground/70">/ swap</span>
+              <span className="text-muted-foreground/70">{fromToken ?? "USD"} / swap</span>
             </div>
+            <button
+              type="button"
+              onClick={() => onSetYolo(!yolo)}
+              title="Auto-trade only every other detected whale (skip one, trade the next)"
+              className={`mt-2 border px-2.5 py-1 font-mono text-[11px] uppercase tracking-wider transition-colors ${
+                yolo ? "border-gold/50 bg-gold/15 text-gold" : "border-border text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              yolo {yolo ? "on" : "off"}
+            </button>
           </>
         )}
       </CardContent>

@@ -16,9 +16,14 @@ interface UpdateBody {
   live?: unknown;
   threshold?: unknown;
   apiKey?: unknown;
-  accountId?: unknown;
+  businessAccountId?: unknown;
+  personalAccountId?: unknown;
+  accountType?: unknown;
+  fromToken?: unknown;
   budget?: unknown;
+  yolo?: unknown;
   copyTradeId?: unknown;
+  discover?: unknown;
 }
 
 export async function POST(req: Request) {
@@ -26,11 +31,29 @@ export async function POST(req: Request) {
     const tracker = getTracker();
     const body = (await req.json()) as UpdateBody;
 
-    if (typeof body.apiKey === "string" || typeof body.accountId === "string") {
+    if (
+      typeof body.apiKey === "string" ||
+      typeof body.businessAccountId === "string" ||
+      typeof body.personalAccountId === "string"
+    ) {
       tracker.setCredentials(
         typeof body.apiKey === "string" ? body.apiKey : undefined,
-        typeof body.accountId === "string" ? body.accountId : undefined,
+        typeof body.businessAccountId === "string" ? body.businessAccountId : undefined,
+        typeof body.personalAccountId === "string" ? body.personalAccountId : undefined,
       );
+      if (typeof body.apiKey === "string") await tracker.discoverAccounts();
+    }
+    if (body.discover === true) {
+      const r = await tracker.discoverAccounts();
+      if (!r.ok) return NextResponse.json({ error: r.error }, { status: 400 });
+    }
+    if (body.accountType === "business" || body.accountType === "personal") {
+      tracker.setAccountType(body.accountType);
+      await tracker.refreshBalances();
+    }
+    if (typeof body.fromToken === "string") {
+      const r = tracker.setFromToken(body.fromToken);
+      if (!r.ok) return NextResponse.json({ error: r.error }, { status: 400 });
     }
     if (typeof body.threshold === "number") {
       const r = tracker.setThreshold(body.threshold);
@@ -43,6 +66,9 @@ export async function POST(req: Request) {
     if (typeof body.live === "boolean") {
       const r = tracker.setLive(body.live);
       if (!r.ok) return NextResponse.json({ error: r.error }, { status: 400 });
+    }
+    if (typeof body.yolo === "boolean") {
+      tracker.setYolo(body.yolo);
     }
     if (typeof body.copyTradeId === "string") {
       const r = await tracker.copyTradeNow(body.copyTradeId);

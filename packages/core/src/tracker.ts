@@ -1,5 +1,5 @@
 import type { TrackerConfig } from "./config.js";
-import { createWhopClient, type WhopClient } from "./whop.js";
+import { createWhopClient, fetchAccountTokens, listAccounts, type WhopAccount, type WhopClient } from "./whop.js";
 import { explorerUrl, fetchBtcPriceUsd, fetchRecentTxs, type RawTx } from "./bitcoin.js";
 import { planCopyTrade, refreshSwapStatus } from "./copytrade.js";
 import type { CopyTradeDecision } from "./copytrade.js";
@@ -22,10 +22,18 @@ export class WhaleTracker {
 
   // Runtime-mutable settings (editable from the dashboard).
   private apiKey: string | undefined;
-  private accountId: string | undefined;
+  private businessAccountId: string | undefined;
+  private personalAccountId: string | undefined;
+  private accountType: "business" | "personal";
+  private availableAccounts: WhopAccount[] = [];
+  private availableTokens: string[] = [];
+  private fromToken: string;
   private threshold: number;
   private live: boolean;
   private budgetUsd: number;
+  // YOLO: auto-trade only every other detected whale (skip one, trade the next).
+  private yolo = false;
+  private yoloCounter = 0;
   private whop: WhopClient | null;
 
   private apiCallSeq = 0;
@@ -42,11 +50,21 @@ export class WhaleTracker {
 
   constructor(private readonly config: TrackerConfig) {
     this.apiKey = config.whopApiKey;
-    this.accountId = config.copyTradeAccountId;
+    const acct = config.copyTradeAccountId;
+    const seededPersonal = acct?.startsWith("user_") ? acct : undefined;
+    this.personalAccountId = seededPersonal;
+    this.businessAccountId = seededPersonal ? undefined : acct;
+    this.accountType = seededPersonal ? "personal" : "business";
+    this.fromToken = config.fromToken;
     this.threshold = config.thresholdUsd;
     this.live = config.copyTradeLive;
     this.budgetUsd = config.copyTradeBudgetUsd;
     this.whop = this.apiKey ? createWhopClient(this.apiKey, config.whopBaseURL) : null;
+  }
+
+  /** The account currently selected for trading. */
+  private get accountId(): string | undefined {
+    return this.accountType === "business" ? this.businessAccountId : this.personalAccountId;
   }
 
   onWhale(listener: WhaleListener): () => void {
@@ -61,9 +79,39 @@ export class WhaleTracker {
   /** Switch copy-trading between dry-run and live at runtime. */
   setLive(live: boolean): { ok: boolean; error?: string } {
     if (!this.copyEnabled) return { ok: false, error: "Connect a Whop API key first." };
-    if (live && !this.accountId) return { ok: false, error: "Set a trading account ID before going live." };
+    if (live && !this.accountId) {
+      return { ok: false, error: `Set a ${this.accountType} account ID before going live.` };
+    }
     this.live = live;
     return { ok: true };
+  }
+
+  /** Switch which wallet funds swaps: personal (/finance, user_) or business (biz_). */
+  setAccountType(type: "business" | "personal"): { ok: boolean; error?: string } {
+    this.accountType = type;
+    return { ok: true };
+  }
+
+  /** Set the token swaps are funded from (e.g. USDC or USDT). */
+  setFromToken(token: string): { ok: boolean; error?: string } {
+    const trimmed = token.trim();
+    if (!trimmed) return { ok: false, error: "Source token is required." };
+    this.fromToken = trimmed;
+    return { ok: true };
+  }
+
+  /** YOLO: auto-trade only every other detected whale. Leaves threshold and size untouched. */
+  setYolo(on: boolean): { ok: boolean; error?: string } {
+    this.yolo = on;
+    this.yoloCounter = 0;
+    return { ok: true };
+  }
+
+  /** In YOLO mode, skip the 1st eligible whale, trade the 2nd, skip the 3rd, and so on. */
+  private yoloShouldSkip(): boolean {
+    if (!this.yolo) return false;
+    this.yoloCounter += 1;
+    return this.yoloCounter % 2 === 1;
   }
 
   /** Change the whale USD threshold and re-classify stored events. */
@@ -75,8 +123,13 @@ export class WhaleTracker {
   }
 
   /** Set Whop credentials at runtime. The key is held in memory only. */
-  setCredentials(apiKey: string | undefined, accountId: string | undefined): { ok: boolean; error?: string } {
-    if (accountId !== undefined) this.accountId = accountId.trim() || undefined;
+  setCredentials(
+    apiKey: string | undefined,
+    businessAccountId: string | undefined,
+    personalAccountId: string | undefined,
+  ): { ok: boolean; error?: string } {
+    if (businessAccountId !== undefined) this.businessAccountId = businessAccountId.trim() || undefined;
+    if (personalAccountId !== undefined) this.personalAccountId = personalAccountId.trim() || undefined;
     if (apiKey !== undefined) {
       const trimmed = apiKey.trim();
       this.apiKey = trimmed || undefined;
@@ -84,6 +137,36 @@ export class WhaleTracker {
       if (!this.whop) this.live = false;
     }
     return { ok: true };
+  }
+
+  /** Discover the accounts this key can trade from and auto-fill any that aren't set yet. */
+  async discoverAccounts(): Promise<{ ok: boolean; error?: string }> {
+    if (!this.whop) {
+      this.availableAccounts = [];
+      return { ok: false, error: "Connect a Whop API key first." };
+    }
+    const accounts = await listAccounts(this.whop);
+    this.availableAccounts = accounts;
+    if (!this.businessAccountId) this.businessAccountId = accounts.find((a) => a.type === "business")?.id;
+    if (!this.personalAccountId) this.personalAccountId = accounts.find((a) => a.type === "personal")?.id;
+    // If the selected type has no account but the other does, switch to the usable one.
+    if (!this.accountId) {
+      if (this.accountType === "personal" && this.businessAccountId) this.accountType = "business";
+      else if (this.accountType === "business" && this.personalAccountId) this.accountType = "personal";
+    }
+    await this.refreshBalances();
+    return { ok: true };
+  }
+
+  /** Refresh the list of tokens the active account can pay swaps from. */
+  async refreshBalances(): Promise<void> {
+    if (!this.whop || !this.accountId) {
+      this.availableTokens = [];
+      return;
+    }
+    const tokens = await fetchAccountTokens(this.whop, this.accountId);
+    // You pay with what you hold, minus the token you're buying.
+    this.availableTokens = tokens.filter((t) => t !== this.config.toToken);
   }
 
   /** Change the USD size of each mirrored swap at runtime. */
@@ -104,7 +187,7 @@ export class WhaleTracker {
     if (decision) {
       whale.copyTrade = decision;
       this.recordTrade(whale, decision);
-      if (decision.status === "completed") this.copyTradeCount += 1;
+      if (decision.swapId) this.copyTradeCount += 1;
     }
     return { ok: true };
   }
@@ -129,7 +212,7 @@ export class WhaleTracker {
       planCopyTrade(
         this.whop as WhopClient,
         {
-          fromToken: this.config.fromToken,
+          fromToken: this.fromToken,
           toToken: this.config.toToken,
           sizeUsd: this.budgetUsd,
           accountId: this.accountId,
@@ -162,7 +245,6 @@ export class WhaleTracker {
       trade.decision = updated;
       const event = this.events.find((e) => e.id === trade.whaleId);
       if (event) event.copyTrade = updated;
-      if (updated.status === "completed") this.copyTradeCount += 1;
       if (event && (updated.status === "completed" || updated.status === "failed")) this.emit(event);
     }
   }
@@ -197,11 +279,11 @@ export class WhaleTracker {
 
     for (const whale of newWhales) {
       if (backfill) continue;
-      if (this.copyEnabled && this.whop) {
+      if (this.copyEnabled && this.whop && !this.yoloShouldSkip()) {
         whale.copyTrade = await this.runCopyTrade(whale);
         if (whale.copyTrade) {
           this.recordTrade(whale, whale.copyTrade);
-          if (whale.copyTrade.status === "completed") this.copyTradeCount += 1;
+          if (whale.copyTrade.swapId) this.copyTradeCount += 1;
         }
       }
       this.emit(whale);
@@ -244,9 +326,17 @@ export class WhaleTracker {
         thresholdUsd: this.threshold,
         budgetUsd: this.budgetUsd,
         copyTradeMode: mode,
+        yolo: this.yolo,
         copyTradeCount: this.copyTradeCount,
         hasApiKey: this.whop != null,
         accountId: this.accountId ?? null,
+        accountType: this.accountType,
+        businessAccountId: this.businessAccountId ?? null,
+        personalAccountId: this.personalAccountId ?? null,
+        accounts: [...this.availableAccounts],
+        availableTokens: [...this.availableTokens],
+        fromToken: this.fromToken,
+        toToken: this.config.toToken,
         running: this.timer != null,
       },
       events: [...this.events],
