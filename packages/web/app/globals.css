@@ -130,3 +130,29 @@ body {
 .font-display {
   font-family: var(--font-display);
 }
+
+@keyframes whaleFlash {
+  0% {
+    background-color: color-mix(in oklab, var(--gold) 34%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+.whale-flash {
+  animation: whaleFlash 1.5s ease-out;
+}
+
+@keyframes coinBurst {
+  0% {
+    transform: translate(-50%, -50%) scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(calc(-50% + var(--tx)), calc(-50% + var(--ty))) scale(0.2);
+    opacity: 0;
+  }
+}
+.coin-particle {
+  animation: coinBurst 0.9s ease-out forwards;
+}

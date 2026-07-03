@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { ArrowUpRight, Clock, Gauge, Loader2, Newspaper, Repeat2, ScanLine, Waves, Zap, type LucideIcon } from "lucide-react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { ArrowUpRight, Clock, Gauge, Loader2, Newspaper, Repeat2, ScanLine, Volume2, VolumeX, Waves, Zap, type LucideIcon } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
@@ -27,6 +27,71 @@ function timeAgo(iso: string): string {
   return `${Math.round(secs / 3600)}h ago`;
 }
 
+/** Smoothly tween a number toward its target — the count-up / odometer effect. */
+function useTween(target: number, ms = 900): number {
+  const [display, setDisplay] = useState(target);
+  const fromRef = useRef(target);
+  useEffect(() => {
+    const from = fromRef.current;
+    if (from === target) return;
+    let raf = 0;
+    const start = performance.now();
+    const tick = (now: number) => {
+      const p = Math.min(1, (now - start) / ms);
+      const eased = 1 - Math.pow(1 - p, 3);
+      setDisplay(from + (target - from) * eased);
+      if (p < 1) raf = requestAnimationFrame(tick);
+      else fromRef.current = target;
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [target, ms]);
+  return display;
+}
+
+function AnimatedUsd({ value, className }: { value: number; className?: string }) {
+  return <span className={className}>{usd(Math.round(useTween(value)))}</span>;
+}
+
+let audioCtx: AudioContext | null = null;
+function tone(freq: number, ms: number, type: OscillatorType, gain: number): void {
+  try {
+    audioCtx ??= new AudioContext();
+    const ctx = audioCtx;
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = type;
+    osc.frequency.value = freq;
+    osc.connect(g).connect(ctx.destination);
+    const t = ctx.currentTime;
+    g.gain.setValueAtTime(gain, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + ms / 1000);
+    osc.start(t);
+    osc.stop(t + ms / 1000);
+  } catch {
+    /* audio unavailable */
+  }
+}
+function whalePing(): void {
+  tone(430, 150, "sine", 0.05);
+  window.setTimeout(() => tone(645, 200, "sine", 0.045), 90);
+}
+function tradeChime(): void {
+  tone(880, 90, "triangle", 0.05);
+  window.setTimeout(() => tone(1320, 220, "triangle", 0.05), 80);
+}
+function settleChime(): void {
+  tone(660, 100, "triangle", 0.05);
+  window.setTimeout(() => tone(990, 110, "triangle", 0.05), 100);
+  window.setTimeout(() => tone(1320, 320, "triangle", 0.055), 210);
+}
+
+const BURST_PARTICLES = Array.from({ length: 16 }, (_, i) => {
+  const angle = (i / 16) * Math.PI * 2;
+  const dist = 90 + (i % 3) * 26;
+  return { tx: Math.cos(angle) * dist, ty: Math.sin(angle) * dist };
+});
+
 export default function Home() {
   const [snap, setSnap] = useState<TrackerSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -35,8 +100,20 @@ export default function Home() {
   const [news, setNews] = useState<NewsItem[]>([]);
   const [confirmLive, setConfirmLive] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [muted, setMuted] = useState(true);
+  const [whaleAlert, setWhaleAlert] = useState<WhaleEvent | null>(null);
+  const [burst, setBurst] = useState<{ id: string; label: string; settled: boolean } | null>(null);
+  const [flashIds, setFlashIds] = useState<Set<string>>(new Set());
+  const [session, setSession] = useState({ volume: 0, whales: 0, trades: 0 });
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const seenWhales = useRef<Set<string>>(new Set());
+  const seenTrades = useRef<Set<string>>(new Set());
+  const settledSeen = useRef<Set<string>>(new Set());
+  const primed = useRef(false);
+  const mutedRef = useRef(true);
+  const alertTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const burstTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function notify(message: string) {
     setNotice(message);
@@ -92,6 +169,78 @@ export default function Home() {
       clearInterval(id);
     };
   }, []);
+
+  useEffect(() => {
+    mutedRef.current = muted;
+  }, [muted]);
+
+  // Diff each poll against what we've seen to fire the dopamine effects:
+  // a whale alert + row flash on new whales, a burst on new trades, a rolling counter.
+  useEffect(() => {
+    if (!snap) return;
+    const whaleList = snap.events.filter((e) => e.isWhale);
+
+    if (!primed.current) {
+      whaleList.forEach((w) => seenWhales.current.add(w.id));
+      snap.trades.forEach((t) => {
+        seenTrades.current.add(t.id);
+        if (t.decision.status === "completed") settledSeen.current.add(t.id);
+      });
+      setSession({
+        volume: whaleList.reduce((s, w) => s + w.valueUsd, 0),
+        whales: whaleList.length,
+        trades: snap.trades.length,
+      });
+      primed.current = true;
+      return;
+    }
+
+    const freshWhales = whaleList.filter((w) => !seenWhales.current.has(w.id));
+    if (freshWhales.length > 0) {
+      freshWhales.forEach((w) => seenWhales.current.add(w.id));
+      const added = freshWhales.reduce((s, w) => s + w.valueUsd, 0);
+      setSession((s) => ({ ...s, volume: s.volume + added, whales: s.whales + freshWhales.length }));
+      const biggest = freshWhales.reduce((a, b) => (b.valueUsd > a.valueUsd ? b : a));
+      setWhaleAlert(biggest);
+      setFlashIds((prev) => new Set([...prev, ...freshWhales.map((w) => w.id)]));
+      if (!mutedRef.current) whalePing();
+      if (alertTimer.current) clearTimeout(alertTimer.current);
+      alertTimer.current = setTimeout(() => setWhaleAlert(null), 4200);
+      const ids = freshWhales.map((w) => w.id);
+      setTimeout(() => {
+        setFlashIds((prev) => {
+          const next = new Set(prev);
+          ids.forEach((id) => next.delete(id));
+          return next;
+        });
+      }, 1600);
+    }
+
+    const freshTrades = snap.trades.filter((t) => !seenTrades.current.has(t.id));
+    if (freshTrades.length > 0) {
+      freshTrades.forEach((t) => seenTrades.current.add(t.id));
+      setSession((s) => ({ ...s, trades: s.trades + freshTrades.length }));
+      const d = freshTrades[0].decision;
+      const out = d.quote ? `${d.quote.amountOut} ${d.toToken}` : d.toToken;
+      fireBurst({ id: freshTrades[0].id, label: `+${out}`, settled: false });
+    }
+
+    // Real live swaps settle asynchronously — celebrate the moment funds actually land.
+    const settled = snap.trades.filter((t) => t.decision.status === "completed" && !settledSeen.current.has(t.id));
+    if (settled.length > 0) {
+      settled.forEach((t) => settledSeen.current.add(t.id));
+      const d = settled[0].decision;
+      const out = d.quote ? `${d.quote.amountOut} ${d.toToken}` : d.toToken;
+      fireBurst({ id: `settled-${settled[0].id}`, label: `+${out}`, settled: true });
+    }
+  }, [snap]);
+
+  function fireBurst(next: { id: string; label: string; settled: boolean }): void {
+    setBurst(next);
+    if (!mutedRef.current) (next.settled ? settleChime : tradeChime)();
+    if (burstTimer.current) clearTimeout(burstTimer.current);
+    burstTimer.current = setTimeout(() => setBurst(null), next.settled ? 2200 : 1400);
+  }
 
   async function applyUpdate(payload: Record<string, unknown>): Promise<boolean> {
     try {
@@ -163,9 +312,22 @@ export default function Home() {
               <span className="text-gold">₿</span> {usd(stats.btcPriceUsd)}
             </span>
           ) : null}
+          <button
+            type="button"
+            aria-label={muted ? "Unmute alerts" : "Mute alerts"}
+            onClick={() => setMuted((m) => !m)}
+            className="border-border bg-card text-muted-foreground hover:text-foreground flex size-9 items-center justify-center border transition-colors"
+          >
+            {muted ? <VolumeX className="size-4" /> : <Volume2 className="size-4" />}
+          </button>
           <ThemeToggle />
         </div>
       </header>
+
+      {whaleAlert ? <WhaleAlert key={whaleAlert.id} event={whaleAlert} /> : null}
+      {burst ? <TradeBurst key={burst.id} label={burst.label} settled={burst.settled} /> : null}
+
+      <SessionBar volume={session.volume} whales={session.whales} trades={session.trades} />
 
       {error ? (
         <Card className="border-negative/40 bg-negative/10 mb-6">
@@ -242,6 +404,7 @@ export default function Home() {
                   canCopy={!!stats && stats.copyTradeMode !== "off"}
                   live={stats?.copyTradeMode === "live"}
                   busy={copyingId === event.id}
+                  flash={flashIds.has(event.id)}
                   onCopyTrade={() => copyTrade(event.id)}
                 />
               ))}
@@ -488,6 +651,7 @@ function WhaleRow({
   canCopy,
   live,
   busy,
+  flash,
   onCopyTrade,
 }: {
   event: WhaleEvent;
@@ -496,6 +660,7 @@ function WhaleRow({
   canCopy: boolean;
   live: boolean;
   busy: boolean;
+  flash: boolean;
   onCopyTrade: () => void;
 }) {
   const ct = event.copyTrade;
@@ -504,7 +669,7 @@ function WhaleRow({
   const pending = ct?.status === "pending";
   const working = busy || pending;
   return (
-    <div className="hover:bg-accent/40 px-5 py-3.5 transition-colors">
+    <div className={`px-5 py-3.5 transition-colors ${flash ? "whale-flash" : "hover:bg-accent/40"}`}>
       <div className="flex items-baseline justify-between gap-3">
         <div className="flex items-baseline gap-2.5">
           <span className="text-muted-foreground/50 w-5 text-right font-mono text-xs tabular-nums">
@@ -625,6 +790,73 @@ function EmptyFeed() {
       <div className="text-center">
         <p className="text-sm font-medium">Scanning the mempool…</p>
         <p className="text-muted-foreground text-xs">Whale-sized transactions will appear here in real time.</p>
+      </div>
+    </div>
+  );
+}
+
+function SessionBar({ volume, whales, trades }: { volume: number; whales: number; trades: number }) {
+  return (
+    <div className="border-border bg-card mb-6 flex flex-wrap items-center justify-between gap-x-6 gap-y-2 border px-5 py-4">
+      <div className="flex items-baseline gap-3">
+        <span className="text-muted-foreground font-mono text-[10px] font-medium uppercase tracking-widest">
+          Tracked this session
+        </span>
+        <AnimatedUsd value={volume} className="text-gold font-display text-3xl font-semibold tabular-nums" />
+        <ArrowUpRight className="text-gold/70 size-5" />
+      </div>
+      <div className="text-muted-foreground flex items-center gap-5 font-mono text-xs uppercase tracking-wider">
+        <span className="flex items-center gap-1.5">
+          <Waves className="size-3.5" /> {whales} whales
+        </span>
+        <span className="flex items-center gap-1.5">
+          <Zap className="size-3.5" /> {trades} copied
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function WhaleAlert({ event }: { event: WhaleEvent }) {
+  return (
+    <div className="animate-in fade-in slide-in-from-top-2 fixed left-1/2 top-6 z-[60] -translate-x-1/2 duration-300">
+      <div className="border-gold/50 bg-card/95 flex items-center gap-3 border px-5 py-3 shadow-2xl backdrop-blur">
+        <span className="bg-gold/15 flex size-10 items-center justify-center text-xl">🐋</span>
+        <div className="flex flex-col leading-tight">
+          <span className="text-gold/80 font-mono text-[10px] font-medium uppercase tracking-widest">Whale detected</span>
+          <AnimatedUsd value={event.valueUsd} className="text-gold font-display text-2xl font-semibold tabular-nums" />
+          <span className="text-muted-foreground font-mono text-[11px] tabular-nums">{btc(event.valueBtc)}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TradeBurst({ label, settled }: { label: string; settled: boolean }) {
+  const accent = settled ? "text-positive" : "text-gold";
+  const subtle = settled ? "text-positive/80" : "text-gold/80";
+  const dot = settled ? "bg-positive" : "bg-gold";
+  const border = settled ? "border-positive/60" : "border-gold/50";
+  const particles = settled ? [...BURST_PARTICLES, ...BURST_PARTICLES] : BURST_PARTICLES;
+  return (
+    <div className="pointer-events-none fixed inset-0 z-[60] flex items-center justify-center">
+      <div className="relative">
+        {particles.map((p, i) => (
+          <span
+            key={i}
+            className={`coin-particle ${dot} absolute left-1/2 top-1/2 rounded-full ${settled && i % 2 ? "size-2.5" : "size-2"}`}
+            style={{ "--tx": `${settled ? p.tx * 1.4 : p.tx}px`, "--ty": `${settled ? p.ty * 1.4 : p.ty}px` } as unknown as CSSProperties}
+          />
+        ))}
+        <div className={`animate-in fade-in zoom-in-50 ${border} bg-card/95 flex items-center gap-2 border px-5 py-3 shadow-2xl backdrop-blur duration-200`}>
+          <Zap className={`${accent} size-5`} />
+          <div className="flex flex-col leading-tight">
+            <span className={`${subtle} font-mono text-[10px] font-medium uppercase tracking-widest`}>
+              {settled ? "Swap settled" : "Trade placed"}
+            </span>
+            <span className={`${accent} font-display text-lg font-semibold tabular-nums`}>{label}</span>
+          </div>
+        </div>
       </div>
     </div>
   );
