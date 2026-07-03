@@ -1,5 +1,5 @@
 import type { TrackerConfig } from "./config.js";
-import { createWhopClient, fetchAccountTokens, listAccounts, type WhopAccount, type WhopClient } from "./whop.js";
+import { createWhopClient, listAccounts, type WhopAccount, type WhopClient } from "./whop.js";
 import { explorerUrl, fetchBtcPriceUsd, fetchRecentTxs, type RawTx } from "./bitcoin.js";
 import { planCopyTrade, refreshSwapStatus } from "./copytrade.js";
 import type { CopyTradeDecision } from "./copytrade.js";
@@ -26,8 +26,8 @@ export class WhaleTracker {
   private personalAccountId: string | undefined;
   private accountType: "business" | "personal";
   private availableAccounts: WhopAccount[] = [];
-  private availableTokens: string[] = [];
-  private fromToken: string;
+  private readonly fromToken: string;
+  private readonly verbose: boolean;
   private threshold: number;
   private live: boolean;
   private budgetUsd: number;
@@ -56,6 +56,7 @@ export class WhaleTracker {
     this.businessAccountId = seededPersonal ? undefined : acct;
     this.accountType = seededPersonal ? "personal" : "business";
     this.fromToken = config.fromToken;
+    this.verbose = config.verbose;
     this.threshold = config.thresholdUsd;
     this.live = config.copyTradeLive;
     this.budgetUsd = config.copyTradeBudgetUsd;
@@ -92,14 +93,6 @@ export class WhaleTracker {
     return { ok: true };
   }
 
-  /** Set the token swaps are funded from (e.g. USDC or USDT). */
-  setFromToken(token: string): { ok: boolean; error?: string } {
-    const trimmed = token.trim();
-    if (!trimmed) return { ok: false, error: "Source token is required." };
-    this.fromToken = trimmed;
-    return { ok: true };
-  }
-
   /** YOLO: auto-trade only every other detected whale. Leaves threshold and size untouched. */
   setYolo(on: boolean): { ok: boolean; error?: string } {
     this.yolo = on;
@@ -122,23 +115,6 @@ export class WhaleTracker {
     return { ok: true };
   }
 
-  /** Set Whop credentials at runtime. The key is held in memory only. */
-  setCredentials(
-    apiKey: string | undefined,
-    businessAccountId: string | undefined,
-    personalAccountId: string | undefined,
-  ): { ok: boolean; error?: string } {
-    if (businessAccountId !== undefined) this.businessAccountId = businessAccountId.trim() || undefined;
-    if (personalAccountId !== undefined) this.personalAccountId = personalAccountId.trim() || undefined;
-    if (apiKey !== undefined) {
-      const trimmed = apiKey.trim();
-      this.apiKey = trimmed || undefined;
-      this.whop = this.apiKey ? createWhopClient(this.apiKey, this.config.whopBaseURL) : null;
-      if (!this.whop) this.live = false;
-    }
-    return { ok: true };
-  }
-
   /** Discover the accounts this key can trade from and auto-fill any that aren't set yet. */
   async discoverAccounts(): Promise<{ ok: boolean; error?: string }> {
     if (!this.whop) {
@@ -154,19 +130,7 @@ export class WhaleTracker {
       if (this.accountType === "personal" && this.businessAccountId) this.accountType = "business";
       else if (this.accountType === "business" && this.personalAccountId) this.accountType = "personal";
     }
-    await this.refreshBalances();
     return { ok: true };
-  }
-
-  /** Refresh the list of tokens the active account can pay swaps from. */
-  async refreshBalances(): Promise<void> {
-    if (!this.whop || !this.accountId) {
-      this.availableTokens = [];
-      return;
-    }
-    const tokens = await fetchAccountTokens(this.whop, this.accountId);
-    // You pay with what you hold, minus the token you're buying.
-    this.availableTokens = tokens.filter((t) => t !== this.config.toToken);
   }
 
   /** Change the USD size of each mirrored swap at runtime. */
@@ -204,6 +168,9 @@ export class WhaleTracker {
       decision,
     });
     this.trades.length = Math.min(this.trades.length, this.config.maxEvents);
+    const out = decision.quote ? `${decision.quote.amountOut} ${decision.toToken}` : "?";
+    const tail = decision.swapId ? ` · swap=${decision.swapId}` : decision.error ? ` · ${decision.error}` : "";
+    this.vlog(`  ↳ copy-trade ${decision.status}: buy $${decision.sizeUsd} ${decision.fromToken} → ${out}${tail}`);
   }
 
   /** Run a copy-trade for one whale, serializing live swaps (one per account at a time). */
@@ -277,7 +244,15 @@ export class WhaleTracker {
       this.events.length = Math.min(this.events.length, this.config.maxEvents);
     }
 
+    const priceTag = this.btcPriceUsd != null ? ` · BTC $${Math.round(this.btcPriceUsd).toLocaleString("en-US")}` : "";
+    this.vlog(
+      backfill
+        ? `seeded ${newEvents.length} txs · ${newWhales.length} whales ≥ $${this.threshold.toLocaleString("en-US")}${priceTag}`
+        : `poll #${this.pollCount} · +${newEvents.length} txs · ${newWhales.length} whales${priceTag}`,
+    );
+
     for (const whale of newWhales) {
+      this.vlog(WhaleTracker.whaleLine(whale));
       if (backfill) continue;
       if (this.copyEnabled && this.whop && !this.yoloShouldSkip()) {
         whale.copyTrade = await this.runCopyTrade(whale);
@@ -334,7 +309,6 @@ export class WhaleTracker {
         businessAccountId: this.businessAccountId ?? null,
         personalAccountId: this.personalAccountId ?? null,
         accounts: [...this.availableAccounts],
-        availableTokens: [...this.availableTokens],
         fromToken: this.fromToken,
         toToken: this.config.toToken,
         running: this.timer != null,
@@ -364,6 +338,16 @@ export class WhaleTracker {
 
   private emit(event: WhaleEvent): void {
     for (const listener of this.listeners) listener(event);
+  }
+
+  /** Console log gated by the verbose flag — used for continuous server-side tracing. */
+  private vlog(msg: string): void {
+    if (!this.verbose) return;
+    console.log(`[${new Date().toLocaleTimeString()}] ${msg}`);
+  }
+
+  private static whaleLine(w: WhaleEvent): string {
+    return `🐋 whale $${Math.round(w.valueUsd).toLocaleString("en-US")} · ${w.valueBtc.toFixed(4)} BTC · ${w.txid.slice(0, 10)}…`;
   }
 
   private async timed<T>(method: string, endpoint: string, fn: () => Promise<T>): Promise<T | null> {
@@ -401,5 +385,6 @@ export class WhaleTracker {
       error,
     });
     this.apiCalls.length = Math.min(this.apiCalls.length, this.config.maxEvents);
+    this.vlog(`${ok ? "→" : "✗"} ${method} ${endpoint} · ${status} · ${latencyMs}ms${error ? ` · ${error}` : ""}`);
   }
 }

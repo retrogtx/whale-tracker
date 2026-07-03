@@ -15,45 +15,20 @@ export function GET() {
 interface UpdateBody {
   live?: unknown;
   threshold?: unknown;
-  apiKey?: unknown;
-  businessAccountId?: unknown;
-  personalAccountId?: unknown;
   accountType?: unknown;
-  fromToken?: unknown;
   budget?: unknown;
   yolo?: unknown;
   copyTradeId?: unknown;
-  discover?: unknown;
 }
 
 export async function POST(req: Request) {
   try {
     const tracker = getTracker();
     const body = (await req.json()) as UpdateBody;
+    console.log(`[${new Date().toLocaleTimeString()}] command`, body);
 
-    if (
-      typeof body.apiKey === "string" ||
-      typeof body.businessAccountId === "string" ||
-      typeof body.personalAccountId === "string"
-    ) {
-      tracker.setCredentials(
-        typeof body.apiKey === "string" ? body.apiKey : undefined,
-        typeof body.businessAccountId === "string" ? body.businessAccountId : undefined,
-        typeof body.personalAccountId === "string" ? body.personalAccountId : undefined,
-      );
-      if (typeof body.apiKey === "string") await tracker.discoverAccounts();
-    }
-    if (body.discover === true) {
-      const r = await tracker.discoverAccounts();
-      if (!r.ok) return NextResponse.json({ error: r.error }, { status: 400 });
-    }
     if (body.accountType === "business" || body.accountType === "personal") {
       tracker.setAccountType(body.accountType);
-      await tracker.refreshBalances();
-    }
-    if (typeof body.fromToken === "string") {
-      const r = tracker.setFromToken(body.fromToken);
-      if (!r.ok) return NextResponse.json({ error: r.error }, { status: 400 });
     }
     if (typeof body.threshold === "number") {
       const r = tracker.setThreshold(body.threshold);

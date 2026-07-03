@@ -3,11 +3,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Load the workspace-root .env so the CLI and dashboard share one config file.
+// Load workspace-root env files so the CLI and dashboard share one config.
+// .env.local wins over .env (first match set takes precedence).
 const here = dirname(fileURLToPath(import.meta.url));
-const rootEnv = resolve(here, "../../.env");
-if (existsSync(rootEnv)) {
-  for (const line of readFileSync(rootEnv, "utf8").split("\n")) {
+for (const name of [".env.local", ".env"]) {
+  const envPath = resolve(here, "../..", name);
+  if (!existsSync(envPath)) continue;
+  for (const line of readFileSync(envPath, "utf8").split("\n")) {
     const match = line.match(/^\s*([\w.]+)\s*=\s*(.*?)\s*$/);
     if (!match) continue;
     const [, key, rawValue = ""] = match;

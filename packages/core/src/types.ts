@@ -43,7 +43,6 @@ export interface TrackerStats {
   businessAccountId: string | null;
   personalAccountId: string | null;
   accounts: WhopAccount[];
-  availableTokens: string[];
   fromToken: string;
   toToken: string;
   running: boolean;

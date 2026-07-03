@@ -2,7 +2,7 @@ export { loadConfig } from "./config.js";
 export type { TrackerConfig } from "./config.js";
 export { WhaleTracker } from "./tracker.js";
 export type { PollResult, WhaleListener } from "./tracker.js";
-export { createWhopClient, listAccounts, fetchAccountTokens } from "./whop.js";
+export { createWhopClient, listAccounts } from "./whop.js";
 export type { WhopClient, WhopAccount } from "./whop.js";
 export { planCopyTrade } from "./copytrade.js";
 export type { CopyTradeDecision } from "./copytrade.js";

@@ -4,6 +4,8 @@ export interface TrackerConfig {
   thresholdUsd: number;
   pollIntervalMs: number;
   maxEvents: number;
+  // Log every poll, whale, copy-trade, and API call to the console.
+  verbose: boolean;
   // --- Whop copy-trade ---
   whopApiKey: string | undefined;
   whopBaseURL: string | undefined;
@@ -40,6 +42,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): TrackerConfig 
     thresholdUsd: numberEnv("WHALE_THRESHOLD_USD", 1_000_000, env),
     pollIntervalMs: numberEnv("POLL_INTERVAL_MS", 15_000, env),
     maxEvents: numberEnv("MAX_EVENTS", 200, env),
+    verbose: false,
     whopApiKey,
     whopBaseURL: env.WHOP_BASE_URL?.trim() || undefined,
     // Whether copy-trade is allowed at all. A key can be supplied later at runtime.

@@ -1,13 +1,12 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ArrowUpRight, Clock, Gauge, Loader2, Newspaper, Repeat2, ScanLine, Settings, Waves, Zap, type LucideIcon } from "lucide-react";
+import { ArrowUpRight, Clock, Gauge, Loader2, Newspaper, Repeat2, ScanLine, Waves, Zap, type LucideIcon } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { ConfirmDialog } from "@/components/confirm-dialog";
-import { CredentialsModal } from "@/components/credentials-modal";
 import type { CopyTradeDecision, NewsItem, PlacedTrade, TrackerSnapshot, WhaleEvent } from "@whale-tracker/core";
 
 const POLL_MS = 3000;
@@ -32,8 +31,6 @@ export default function Home() {
   const [snap, setSnap] = useState<TrackerSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
-  const [editCreds, setEditCreds] = useState(false);
-  const [sessionConnected, setSessionConnected] = useState<boolean | null>(null);
   const [copyingId, setCopyingId] = useState<string | null>(null);
   const [news, setNews] = useState<NewsItem[]>([]);
   const [confirmLive, setConfirmLive] = useState(false);
@@ -46,10 +43,6 @@ export default function Home() {
     if (noticeTimer.current) clearTimeout(noticeTimer.current);
     noticeTimer.current = setTimeout(() => setNotice(null), 5000);
   }
-
-  useEffect(() => {
-    setSessionConnected(sessionStorage.getItem("whop-connected") === "1");
-  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -170,35 +163,9 @@ export default function Home() {
               <span className="text-gold">₿</span> {usd(stats.btcPriceUsd)}
             </span>
           ) : null}
-          <button
-            type="button"
-            aria-label="Whop credentials"
-            onClick={() => setEditCreds(true)}
-            className="border-border bg-card text-muted-foreground hover:text-foreground flex size-9 items-center justify-center border transition-colors"
-          >
-            <Settings className="size-4" />
-          </button>
           <ThemeToggle />
         </div>
       </header>
-
-      <CredentialsModal
-        open={editCreds || sessionConnected === false}
-        dismissible={sessionConnected === true}
-        hasApiKey={stats?.hasApiKey ?? false}
-        businessAccountId={stats?.businessAccountId ?? null}
-        personalAccountId={stats?.personalAccountId ?? null}
-        onSave={async (apiKey, businessAccountId, personalAccountId) => {
-          const ok = await applyUpdate({ apiKey, businessAccountId, personalAccountId });
-          if (ok) {
-            sessionStorage.setItem("whop-connected", "1");
-            setSessionConnected(true);
-            setEditCreds(false);
-          }
-          return ok;
-        }}
-        onCancel={() => setEditCreds(false)}
-      />
 
       {error ? (
         <Card className="border-negative/40 bg-negative/10 mb-6">
@@ -232,17 +199,14 @@ export default function Home() {
           mode={stats?.copyTradeMode}
           budgetUsd={stats?.budgetUsd}
           fromToken={stats?.fromToken}
-          availableTokens={stats?.availableTokens}
           accountType={stats?.accountType}
           hasBusiness={!!stats?.businessAccountId}
           hasPersonal={!!stats?.personalAccountId}
           yolo={stats?.yolo}
           onSetLive={handleSetLive}
           onSetBudget={(n) => applyUpdate({ budget: n })}
-          onSetFromToken={(t) => applyUpdate({ fromToken: t })}
           onSetAccountType={(t) => applyUpdate({ accountType: t })}
           onSetYolo={(on) => applyUpdate({ yolo: on })}
-          onConnect={() => setEditCreds(true)}
         />
         <Stat icon={Zap} label="Trades placed" value={stats ? String(stats.copyTradeCount) : "—"} />
         <Stat icon={ScanLine} label="Txs scanned" value={stats ? String(stats.eventCount) : "—"} />
@@ -396,39 +360,31 @@ function CopyTradeCard({
   mode,
   budgetUsd,
   fromToken,
-  availableTokens,
   accountType,
   hasBusiness,
   hasPersonal,
   yolo,
   onSetLive,
   onSetBudget,
-  onSetFromToken,
   onSetAccountType,
   onSetYolo,
-  onConnect,
 }: {
   mode: "off" | "dry-run" | "live" | undefined;
   budgetUsd: number | undefined;
   fromToken: string | undefined;
-  availableTokens: string[] | undefined;
   accountType: "business" | "personal" | undefined;
   hasBusiness: boolean;
   hasPersonal: boolean;
   yolo: boolean | undefined;
   onSetLive: (live: boolean) => void;
   onSetBudget: (n: number) => void;
-  onSetFromToken: (token: string) => void;
   onSetAccountType: (type: "business" | "personal") => void;
   onSetYolo: (on: boolean) => void;
-  onConnect: () => void;
 }) {
   const seg = "px-2.5 py-1 uppercase transition-colors";
   const availableTypes = (["business", "personal"] as const).filter((t) =>
     t === "business" ? hasBusiness : hasPersonal,
   );
-  // Only the tokens the wallet actually holds — plus the current one so it's never empty.
-  const tokenOptions = [...new Set([...(availableTokens ?? []), ...(fromToken ? [fromToken] : [])])];
   return (
     <Card>
       <CardContent className="p-4">
@@ -437,13 +393,9 @@ function CopyTradeCard({
           <Repeat2 className="size-4 opacity-60" />
         </div>
         {!mode || mode === "off" ? (
-          <button
-            type="button"
-            onClick={onConnect}
-            className="text-muted-foreground hover:text-foreground mt-2 font-mono text-sm underline underline-offset-4"
-          >
-            connect key →
-          </button>
+          <p className="text-muted-foreground mt-2 font-mono text-xs leading-relaxed">
+            set <span className="text-foreground">WHOP_API_KEY</span> in .env.local
+          </p>
         ) : (
           <>
             <div className="border-border mt-2.5 inline-flex border font-mono text-[11px]">
@@ -479,24 +431,8 @@ function CopyTradeCard({
                   ))}
                 </div>
               ) : null}
-              {tokenOptions.length > 1 ? (
-                <div className="border-border inline-flex border">
-                  {tokenOptions.map((t, i) => (
-                    <button
-                      key={t}
-                      type="button"
-                      onClick={() => onSetFromToken(t)}
-                      className={`${seg} ${i > 0 ? "border-border border-l" : ""} ${
-                        fromToken === t ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      {t}
-                    </button>
-                  ))}
-                </div>
-              ) : null}
             </div>
-            <div className="text-muted-foreground mt-2 flex items-baseline gap-1 font-mono text-xs">
+            <div className="text-muted-foreground mt-2 flex flex-wrap items-baseline gap-x-1 gap-y-0.5 font-mono text-xs">
               <span>$</span>
               <input
                 key={budgetUsd}
@@ -510,10 +446,10 @@ function CopyTradeCard({
                   const n = Number(e.target.value);
                   if (Number.isFinite(n) && n > 0 && n !== budgetUsd) onSetBudget(n);
                 }}
-                className="text-foreground w-14 min-w-0 bg-transparent font-mono text-xs tabular-nums outline-none"
+                className="text-foreground w-10 min-w-0 bg-transparent font-mono text-xs tabular-nums outline-none"
                 aria-label="Swap size in USD"
               />
-              <span className="text-muted-foreground/70">{fromToken ?? "USD"} / swap</span>
+              <span className="text-muted-foreground/70 whitespace-nowrap">{fromToken ?? "USD"} / swap</span>
             </div>
             <button
               type="button"
