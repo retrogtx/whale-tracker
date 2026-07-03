@@ -178,7 +178,7 @@ export default function Home() {
   // a whale alert + row flash on new whales, a burst on new trades, a rolling counter.
   useEffect(() => {
     if (!snap) return;
-    const whaleList = snap.events.filter((e) => e.isWhale);
+    const whaleList = snap.whales;
 
     if (!primed.current) {
       whaleList.forEach((w) => seenWhales.current.add(w.id));
@@ -277,7 +277,7 @@ export default function Home() {
   }
 
   const stats = snap?.stats;
-  const whales = (snap?.events ?? []).filter((e) => e.isWhale);
+  const whales = snap?.whales ?? [];
   const maxUsd = whales.reduce((m, w) => Math.max(m, w.valueUsd), 0);
   const trades = snap?.trades ?? [];
 

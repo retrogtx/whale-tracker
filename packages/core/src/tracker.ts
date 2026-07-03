@@ -14,7 +14,11 @@ export interface PollResult {
 export type WhaleListener = (event: WhaleEvent) => void;
 
 export class WhaleTracker {
+  // Raw recent transactions — used for the "txs scanned" count; churns fast.
   private readonly events: WhaleEvent[] = [];
+  // Detected whales kept in their own bounded list so the flood of small txs
+  // can't evict them from the feed.
+  private whales: WhaleEvent[] = [];
   private readonly apiCalls: ApiCall[] = [];
   private readonly trades: PlacedTrade[] = [];
   private readonly seen = new Set<string>();
@@ -107,12 +111,26 @@ export class WhaleTracker {
     return this.yoloCounter % 2 === 1;
   }
 
-  /** Change the whale USD threshold and re-classify stored events. */
+  /** Change the whale USD threshold and re-classify stored events + the whale feed. */
   setThreshold(value: number): { ok: boolean; error?: string } {
     if (!Number.isFinite(value) || value <= 0) return { ok: false, error: "Threshold must be a positive number." };
     this.threshold = value;
     for (const event of this.events) event.isWhale = event.valueUsd >= value;
+    // Rebuild the feed: keep existing whales that still qualify, plus any
+    // in-window txs that now do. Drops those below a raised threshold.
+    const byId = new Map<string, WhaleEvent>();
+    for (const w of this.whales) if (w.valueUsd >= value) byId.set(w.id, w);
+    for (const e of this.events) if (e.valueUsd >= value) byId.set(e.id, e);
+    this.whales = [...byId.values()].sort(
+      (a, b) => new Date(b.detectedAt).getTime() - new Date(a.detectedAt).getTime(),
+    );
+    this.whales.length = Math.min(this.whales.length, this.config.maxEvents);
     return { ok: true };
+  }
+
+  /** Find a detected whale by id — checks the persistent feed first, then raw events. */
+  private findWhale(id: string): WhaleEvent | undefined {
+    return this.whales.find((e) => e.id === id) ?? this.events.find((e) => e.id === id);
   }
 
   /** Discover the accounts this key can trade from and auto-fill any that aren't set yet. */
@@ -144,7 +162,7 @@ export class WhaleTracker {
   async copyTradeNow(id: string): Promise<{ ok: boolean; error?: string }> {
     if (!this.copyEnabled || !this.whop) return { ok: false, error: "Connect a Whop API key first." };
     if (this.live && !this.accountId) return { ok: false, error: "Set a trading account ID before going live." };
-    const whale = this.events.find((e) => e.id === id);
+    const whale = this.findWhale(id);
     if (!whale) return { ok: false, error: "Whale not found." };
 
     const decision = await this.runCopyTrade(whale);
@@ -210,7 +228,7 @@ export class WhaleTracker {
       if (d.status !== "pending" || !d.swapId) continue;
       const updated = await refreshSwapStatus(this.whop, d);
       trade.decision = updated;
-      const event = this.events.find((e) => e.id === trade.whaleId);
+      const event = this.findWhale(trade.whaleId);
       if (event) event.copyTrade = updated;
       if (event && (updated.status === "completed" || updated.status === "failed")) this.emit(event);
     }
@@ -242,6 +260,11 @@ export class WhaleTracker {
     if (newEvents.length > 0) {
       this.events.unshift(...newEvents.sort((a, b) => b.valueUsd - a.valueUsd));
       this.events.length = Math.min(this.events.length, this.config.maxEvents);
+    }
+
+    if (newWhales.length > 0) {
+      this.whales.unshift(...newWhales.slice().sort((a, b) => b.valueUsd - a.valueUsd));
+      this.whales.length = Math.min(this.whales.length, this.config.maxEvents);
     }
 
     const priceTag = this.btcPriceUsd != null ? ` · BTC $${Math.round(this.btcPriceUsd).toLocaleString("en-US")}` : "";
@@ -294,7 +317,7 @@ export class WhaleTracker {
       stats: {
         pollCount: this.pollCount,
         eventCount: this.events.length,
-        whaleCount: this.events.reduce((n, e) => n + (e.isWhale ? 1 : 0), 0),
+        whaleCount: this.whales.length,
         btcPriceUsd: this.btcPriceUsd,
         lastPolledAt: this.lastPolledAt,
         lastError: this.lastError,
@@ -314,6 +337,7 @@ export class WhaleTracker {
         running: this.timer != null,
       },
       events: [...this.events],
+      whales: [...this.whales],
       apiCalls: [...this.apiCalls],
       trades: [...this.trades],
     };

@@ -61,6 +61,7 @@ export interface PlacedTrade {
 export interface TrackerSnapshot {
   stats: TrackerStats;
   events: WhaleEvent[];
+  whales: WhaleEvent[];
   apiCalls: ApiCall[];
   trades: PlacedTrade[];
 }
